@@ -16,19 +16,30 @@
 // einreichen) is only done by `taxme_submit_return`, which requires an
 // explicit confirm:true. Nothing is submitted otherwise.
 //
+// SESSION CACHING: the AGOV/SwissID session is kept alive across server
+// restarts. A persistent Chromium profile keeps the trusted-device state (so
+// AGOV does not re-prompt 2FA), and — because a persistent profile drops
+// session cookies when the browser closes — every successful call also mirrors
+// the full session (incl. session cookies) to `state.json` via
+// `storageState()`. On startup we re-seed the fresh context from that file, so
+// once you run `taxme_login` the session survives restarts until it genuinely
+// expires. See `seedFromState` / `saveState` below.
+//
 // Env:
 //   TAXME_PROFILE   browser profile dir  (default: ~/.taxme-mcp/profile)
+//   TAXME_STATE     storageState json    (default: ~/.taxme-mcp/state.json)
 //   TAXME_CHROMIUM  chromium executable  (default: auto-detect playwright cache)
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
-import { existsSync, readdirSync, mkdirSync } from 'node:fs';
+import { existsSync, readdirSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const PROFILE = process.env.TAXME_PROFILE || join(homedir(), '.taxme-mcp', 'profile');
+const STATE = process.env.TAXME_STATE || join(homedir(), '.taxme-mcp', 'state.json');
 const BASE = 'https://www.belogin.directories.be.ch';
 const CASES = `${BASE}/taxme-npo/facelets/caseSelection.jsf`;
 const KONTOAUSZUG = `${BASE}/taxme-bezug/gui/kontoauszug/forderungen`;
@@ -48,6 +59,28 @@ function findChromium() {
   return undefined;
 }
 
+// Re-seed a fresh context from the cached storageState. A persistent Chromium
+// profile drops non-persistent session cookies when it closes, so on startup we
+// inject the cookies we saved after the last successful call — restoring the
+// AGOV/SwissID session without a fresh login. Best-effort: a missing or corrupt
+// state file just means we start logged-out and `taxme_login` is needed.
+async function seedFromState(c) {
+  if (!existsSync(STATE)) return;
+  try {
+    const saved = JSON.parse(readFileSync(STATE, 'utf8'));
+    if (Array.isArray(saved.cookies) && saved.cookies.length) {
+      await c.addCookies(saved.cookies).catch(() => {});
+    }
+  } catch { /* ignore unreadable/corrupt state.json */ }
+}
+
+// Mirror the live session (incl. session cookies + origins) to state.json so it
+// survives a server restart. Called after login and after every successful,
+// authenticated call. Best-effort — never throws into a tool result.
+async function saveState(c = ctx) {
+  try { if (c) await c.storageState({ path: STATE }); } catch { /* best-effort */ }
+}
+
 let ctx = null, headed = false;
 async function browser(wantHeaded = false) {
   if (ctx && (headed || !wantHeaded)) return ctx;
@@ -58,6 +91,7 @@ async function browser(wantHeaded = false) {
     locale: 'de-CH', viewport: { width: 1400, height: 1000 },
   });
   headed = wantHeaded;
+  await seedFromState(ctx);
   return ctx;
 }
 
@@ -76,6 +110,7 @@ async function ensure(p, url, timeout = 30000) {
   if (u.includes('swissid.ch') || u.includes('agov') || u.includes('/Portal/Error') || /\/login|anmeld/i.test(u)) return 'login_required';
   const body = await p.innerText('body').catch(() => '');
   if (/Angemeldet als:\s*(Benutzer|\n|$)/.test(body)) return 'login_required';
+  await saveState();   // confirmed live session — refresh the cached state
   return 'ok';
 }
 
@@ -221,7 +256,7 @@ const TOOLS = [
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
-const server = new Server({ name: 'taxme-mcp', version: '0.2.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'taxme-mcp', version: '0.3.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 server.setRequestHandler(CallToolRequestSchema, async req => {
@@ -237,7 +272,8 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       await p.bringToFront().catch(() => {});
       await p.waitForURL(u => { const s = String(u); return s.includes('belogin.directories.be.ch') && !s.includes('agov') && !s.includes('Error'); }, { timeout: 480000 });
       await p.waitForTimeout(3000);
-      return text({ status: 'ok', message: 'BE-Login/AGOV erfolgreich, Session gespeichert.' });
+      await saveState();   // persist the fresh AGOV session to state.json
+      return text({ status: 'ok', message: 'BE-Login/AGOV erfolgreich, Session in state.json gespeichert (überlebt Server-Neustarts).' });
     }
     if (name === 'taxme_account_statement') return text(await readAccountStatement(await page()));
     if (name === 'taxme_list_returns') return text(await listReturns(await page()));
@@ -267,21 +303,24 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       if (!(await el.count())) return text({ error: `Menüpunkt "${args.name}" nicht gefunden`, menu: await readMenu(p) });
       await el.click({ timeout: 10000 });
       await p.waitForTimeout(5000); await p.waitForLoadState('domcontentloaded').catch(() => {});
+      await saveState();
       return text({ breadcrumb: (await snapshot(p)).breadcrumb, fields: await readFields(p) });
     }
     if (name === 'taxme_fill') {
       const p = await page();
       const results = [];
       for (const v of args.values) { results.push(await fillOne(p, v.target, v.value)); await p.waitForTimeout(600); }
+      await saveState();
       return text({ results, fields_after: await readFields(p) });
     }
-    if (name === 'taxme_click') { const p = await page(); const r = await clickByText(p, args.label); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, fields: await readFields(p) }); }
+    if (name === 'taxme_click') { const p = await page(); const r = await clickByText(p, args.label); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, fields: await readFields(p) }); }
     if (name === 'taxme_results') {
       const p = await page();
       const el = p.locator('a:has-text("Ergebnisse")').first();
       if (await el.count()) { await el.click().catch(() => {}); await p.waitForTimeout(6000); }
       const body = (await p.innerText('body')).replace(/\n{2,}/g, '\n');
       const i = body.indexOf('Ergebnisse');
+      await saveState();
       return text({ text: body.slice(i > 0 ? i : 0, (i > 0 ? i : 0) + 1500) });
     }
     if (name === 'taxme_submit_return') {

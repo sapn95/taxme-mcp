@@ -1,4 +1,5 @@
 node_modules/
 profile/
+state.json
 *.log
 .DS_Store

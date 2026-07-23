@@ -1,7 +1,7 @@
 {
   "name": "taxme-mcp",
-  "version": "0.2.0",
-  "description": "MCP server for the Canton of Bern tax portal TaxMe / BE-Login — read AND fill tax returns (open, navigate, set fields, results, gated submit) via SwissID/AGOV browser automation",
+  "version": "0.3.0",
+  "description": "MCP server for the Canton of Bern tax portal TaxMe / BE-Login — read AND fill tax returns (open, navigate, set fields, results, gated submit) via SwissID/AGOV browser automation, with cached sessions (storageState) that survive restarts",
   "type": "module",
   "bin": {
     "taxme-mcp": "index.js"
