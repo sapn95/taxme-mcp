@@ -40,6 +40,11 @@ import { existsSync, readdirSync, mkdirSync, readFileSync, rmSync } from 'node:f
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// Name and version come from package.json, never from a second copy here:
+// `npm version` only bumps package.json, so a hardcoded string silently
+// advertises a stale version to every client.
+const PKG = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+
 const PROFILE = process.env.TAXME_PROFILE || join(homedir(), '.taxme-mcp', 'profile');
 const STATE = process.env.TAXME_STATE || join(homedir(), '.taxme-mcp', 'state.json');
 const BASE = 'https://www.belogin.directories.be.ch';
@@ -293,7 +298,7 @@ const TOOLS = [
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
-const server = new Server({ name: 'taxme-mcp', version: '0.4.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: PKG.name, version: PKG.version }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 server.setRequestHandler(CallToolRequestSchema, async req => {
