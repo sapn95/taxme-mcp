@@ -19,5 +19,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sapn95/taxme-mcp.git"
+  },
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs",
+    "hygiene": "node scripts/hygiene.mjs",
+    "test": "node --check index.js && node scripts/smoke.mjs && node scripts/hygiene.mjs"
   }
 }

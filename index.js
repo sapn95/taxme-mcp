@@ -278,7 +278,7 @@ async function clickByText(p, label) {
 
 // ---- tool definitions ----
 const TOOLS = [
-  { name: 'taxme_status', description: 'ok / login_required.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_status', description: 'Check whether the BE-Login/TaxMe session is alive (ok) or an interactive SwissID/AGOV login is needed (login_required). Call this before anything else; it also refreshes the cached session.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_login', description: 'Open a visible window for the SwissID/AGOV login (waits up to 8 min).', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_account_statement', description: 'Open tax amounts (CHF) per tax year.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_list_returns', description: 'Tax returns with status.', inputSchema: { type: 'object', properties: {} } },
