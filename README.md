@@ -83,6 +83,27 @@ Override the locations with env vars if you want:
 | `TAXME_STATE` | `~/.taxme-mcp/state.json` | cached `storageState` json (session cookies — **secret**) |
 | `TAXME_CHROMIUM` | auto-detect | path to a Chromium executable (override the auto-detect) |
 
+## Which browser, and why it decides how you log in
+
+BE-Login authenticates through SwissID/AGOV, and the browser is not a matter of
+taste: Playwright's bundled Chromium reports
+`isUserVerifyingPlatformAuthenticatorAvailable() === false`, so the portal never
+offers a **passkey** and falls back to password plus SMS. An installed, signed
+browser reports `true` and can reach the macOS platform authenticator, which
+turns the same login into one Touch ID confirmation.
+
+The server therefore prefers an installed system browser — `chrome`,
+`chrome-canary`, `edge`, `brave`, in that order — and only falls back to the
+bundled Chromium. Override with `TAXME_BROWSER` (a key from that list, `chromium`,
+or an absolute path); `TAXME_CHROMIUM` still works as an alias.
+
+For the underlying detail, including why a *software* passkey cannot be used at
+all, see the write-up in
+[private-routines/reference/swissid-login.md](https://github.com/sapn95/private-routines).
+
+Register a passkey once in Safari or Chrome under your SwissID account settings;
+after that the portal offers it ahead of the password.
+
 ## Register in Claude Code
 
 From the repo directory, register the server for your user (use an **absolute**

@@ -28,13 +28,15 @@
 // Env:
 //   TAXME_PROFILE   browser profile dir  (default: ~/.taxme-mcp/profile)
 //   TAXME_STATE     storageState json    (default: ~/.taxme-mcp/state.json)
-//   TAXME_CHROMIUM  chromium executable  (default: auto-detect playwright cache)
+//   TAXME_BROWSER   chrome | chrome-canary | edge | brave | chromium | abs. path
+//                   (default: prefer an installed signed browser — see below)
+//   TAXME_CHROMIUM  legacy alias for TAXME_BROWSER
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
-import { existsSync, readdirSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -44,8 +46,32 @@ const BASE = 'https://www.belogin.directories.be.ch';
 const CASES = `${BASE}/taxme-npo/facelets/caseSelection.jsf`;
 const KONTOAUSZUG = `${BASE}/taxme-bezug/gui/kontoauszug/forderungen`;
 
+// Prefer an installed, signed browser. BE-Login authenticates through
+// SwissID/AGOV, and only a signed system browser can reach the macOS platform
+// authenticator: Playwright's bundled Chromium reports
+// isUserVerifyingPlatformAuthenticatorAvailable() === false, so a passkey is
+// never offered and the login falls back to password plus SMS. With Chrome the
+// same login is one Touch ID confirmation. Override with TAXME_BROWSER
+// (chrome | chrome-canary | edge | brave | chromium | absolute path).
+const BROWSERS = {
+  chrome: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  'chrome-canary': '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+  edge: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  brave: '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+};
+
 function findChromium() {
-  if (process.env.TAXME_CHROMIUM) return process.env.TAXME_CHROMIUM;
+  const want = process.env.TAXME_BROWSER || process.env.TAXME_CHROMIUM;
+  if (want && want !== 'chromium') {
+    const path = BROWSERS[want] || want;
+    if (!existsSync(path)) throw new Error(`TAXME_BROWSER="${want}" not found (looked at ${path})`);
+    return path;
+  }
+  if (!want) {
+    for (const key of ['chrome', 'chrome-canary', 'edge', 'brave']) {
+      if (existsSync(BROWSERS[key])) return BROWSERS[key];
+    }
+  }
   try { const p = chromium.executablePath(); if (p && existsSync(p)) return p; } catch { /* scan */ }
   const cache = join(homedir(), 'Library', 'Caches', 'ms-playwright');
   if (existsSync(cache)) {
@@ -86,10 +112,21 @@ async function browser(wantHeaded = false) {
   if (ctx && (headed || !wantHeaded)) return ctx;
   if (ctx) { await ctx.close().catch(() => {}); ctx = null; }
   mkdirSync(PROFILE, { recursive: true });
-  ctx = await chromium.launchPersistentContext(PROFILE, {
+  const launch = () => chromium.launchPersistentContext(PROFILE, {
     headless: !wantHeaded, executablePath: findChromium(),
     locale: 'de-CH', viewport: { width: 1400, height: 1000 },
   });
+  try {
+    ctx = await launch();
+  } catch (e) {
+    // A browser killed rather than closed leaves SingletonLock behind and Chrome
+    // then refuses to start at all, so every later call fails the same way.
+    if (!/ProcessSingleton|SingletonLock/.test(e.message || '')) throw e;
+    for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      try { rmSync(join(PROFILE, f), { force: true }); } catch { /* nothing to clear */ }
+    }
+    ctx = await launch();
+  }
   headed = wantHeaded;
   await seedFromState(ctx);
   return ctx;
@@ -256,7 +293,7 @@ const TOOLS = [
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
-const server = new Server({ name: 'taxme-mcp', version: '0.3.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'taxme-mcp', version: '0.4.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 server.setRequestHandler(CallToolRequestSchema, async req => {
