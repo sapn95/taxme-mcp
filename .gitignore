@@ -3,3 +3,5 @@ profile/
 state.json
 *.log
 .DS_Store
+coverage/
+.nyc_output/
