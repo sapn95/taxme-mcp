@@ -1,6 +1,6 @@
 {
   "name": "taxme-mcp",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "MCP server for the Canton of Bern tax portal TaxMe / BE-Login — read AND fill tax returns (open, navigate, set fields, results, gated submit) via SwissID/AGOV browser automation, with cached sessions (storageState) that survive restarts",
   "type": "module",
   "bin": {
@@ -8,11 +8,11 @@
   },
   "main": "index.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "playwright": "^1.61.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "playwright": "^1.62.0"
   },
   "license": "MIT",
   "author": "sapn95",
@@ -34,5 +34,8 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.12"
   }
 }
