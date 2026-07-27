@@ -1,8 +1,20 @@
+<div align="center">
+
 # taxme-mcp
 
-[![npm](https://img.shields.io/npm/v/taxme-mcp?logo=npm&logoColor=white&label=npm&color=cb3837)](https://www.npmjs.com/package/taxme-mcp) [![CI](https://img.shields.io/github/actions/workflow/status/sapn95/taxme-mcp/ci.yml?branch=main&logo=github&label=CI)](https://github.com/sapn95/taxme-mcp/actions/workflows/ci.yml) [![node](https://img.shields.io/node/v/taxme-mcp?logo=node.js&logoColor=white&color=5FA04E)](https://nodejs.org) [![licence](https://img.shields.io/npm/l/taxme-mcp?color=blue)](LICENSE)
+Read and fill your **Canton of Bern** tax return (TaxMe / BE-Login). Drafts only — submission is gated.
 
-**Read and fill your Canton of Bern tax return (TaxMe / BE-Login) — drafts only, submission is gated.**
+[![npm](https://img.shields.io/npm/v/taxme-mcp?style=flat-square&logo=npm&logoColor=white&label=npm&color=CB3837)](https://www.npmjs.com/package/taxme-mcp)
+&nbsp;
+[![CI](https://img.shields.io/github/actions/workflow/status/sapn95/taxme-mcp/ci.yml?branch=main&style=flat-square&logo=github&logoColor=white&label=CI)](https://github.com/sapn95/taxme-mcp/actions/workflows/ci.yml)
+&nbsp;
+[![node](https://img.shields.io/node/v/taxme-mcp?style=flat-square&logo=nodedotjs&logoColor=white&color=5FA04E)](https://nodejs.org)
+&nbsp;
+[![licence](https://img.shields.io/npm/l/taxme-mcp?style=flat-square&color=4C5B5C)](LICENSE)
+
+</div>
+
+---
 
 > **Unofficial, and inherently fragile.** This drives a web portal with a real
 > browser because the service offers no retrieval API. Portal updates break
