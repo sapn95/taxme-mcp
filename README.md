@@ -1,7 +1,8 @@
 # taxme-mcp
 
-[![npm](https://img.shields.io/npm/v/taxme-mcp?logo=npm)](https://www.npmjs.com/package/taxme-mcp)
-[![CI](https://github.com/sapn95/taxme-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/sapn95/taxme-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/taxme-mcp?logo=npm&logoColor=white&label=npm&color=cb3837)](https://www.npmjs.com/package/taxme-mcp) [![CI](https://img.shields.io/github/actions/workflow/status/sapn95/taxme-mcp/ci.yml?branch=main&logo=github&label=CI)](https://github.com/sapn95/taxme-mcp/actions/workflows/ci.yml) [![node](https://img.shields.io/node/v/taxme-mcp?logo=node.js&logoColor=white&color=5FA04E)](https://nodejs.org) [![licence](https://img.shields.io/npm/l/taxme-mcp?color=blue)](LICENSE)
+
+**Read and fill your Canton of Bern tax return (TaxMe / BE-Login) — drafts only, submission is gated.**
 
 > **Unofficial, and inherently fragile.** This drives a web portal with a real
 > browser because the service offers no retrieval API. Portal updates break
