@@ -50,8 +50,10 @@ jobs:
           pkg="$(node -p 'require("./package.json").version')"
           test "$tag" = "$pkg" || { echo "tag $tag != package.json $pkg"; exit 1; }
 
+      # The browser-driven suite runs in CI on every push to main; what is worth
+      # repeating here is everything that needs neither a browser nor a display.
       - name: Gate
-        run: node --check index.js && node scripts/smoke.mjs && node scripts/hygiene.mjs
+        run: node --check index.js && npm run lint && node scripts/smoke.mjs && node scripts/hygiene.mjs
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
 

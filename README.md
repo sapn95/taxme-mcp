@@ -57,7 +57,7 @@ use.
 
 ## Prerequisites
 
-- **Node.js ≥ 18** (`node --version`).
+- **Node.js ≥ 20.19** (`node --version`).
 - Install dependencies and a Chromium build for Playwright:
 
   ```bash
@@ -102,9 +102,16 @@ Override the locations with env vars if you want:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TAXME_PROFILE` | `~/.taxme-mcp/profile` | browser profile dir (holds the session — **secret**) |
-| `TAXME_STATE` | `~/.taxme-mcp/state.json` | cached `storageState` json (session cookies — **secret**) |
-| `TAXME_CHROMIUM` | auto-detect | path to a Chromium executable (override the auto-detect) |
+| `TAXME_PROFILE` | `~/.taxme-mcp/profile` | browser profile dir (holds the session — **secret**); empty = a throwaway profile |
+| `TAXME_STATE` | `~/.taxme-mcp/state.json` | cached `storageState` json (session cookies — **secret**); empty = don't cache the session |
+| `TAXME_BROWSER` | auto-detect | `chrome`, `chrome-canary`, `edge`, `brave`, `chromium`, or an absolute path |
+| `TAXME_CHROMIUM` | — | legacy alias for `TAXME_BROWSER` |
+| `TAXME_BASE_URL` | the real portal | portal base URL; exists so the test suite can drive a local fixture instead of a real taxpayer's account |
+
+A variable that is **set**, even to the empty string, is authoritative: an empty
+`TAXME_STATE` means *no* session cache, not "fall back to the default one".
+Anything else would make "no session" impossible to express — and would let a
+test that thought it was isolated quietly open the real account.
 
 ## Which browser, and why it decides how you log in
 
@@ -200,8 +207,10 @@ smooths over, so you don't have to:
   a JS `click()` + a dispatched `change` event — plain `.check()` on the input
   doesn't reliably trigger JSF's listeners. In `taxme_fill` a radio `value` may
   be the option value **or** its visible label.
-- **Amounts are whole francs.** Enter `12000`, not `12000.00` / `12'000` — the
-  form expects integer francs.
+- **Amounts are whole francs.** Enter `12000`, not `12000.00` / `12'000`. The
+  form drops the centimes silently, so `taxme_fill` reads every value back and
+  returns a `warning` when the field ended up holding something other than what
+  it was given — a wrong number in a tax return should not look like a success.
 - **The edit popup tab:** opening a return spawns a **new browser tab**;
   `taxme_open_return` waits for and switches to that popup, and the other edit
   tools always target the live edit tab automatically.
@@ -270,10 +279,32 @@ there is no credential, by design.
 
 ## Checks
 
-    npm test
+    npm run gate      # syntax, lint, smoke, hygiene, tests with coverage floors
+    npm test          # the test suite alone
+    npm run coverage  # the suite plus the enforced coverage thresholds
 
-Runs exactly what CI runs, offline and without credentials: a syntax check, the
-protocol smoke test and the hygiene scan.
+`npm run gate` is what CI runs. It needs a Chromium
+(`npx playwright install chromium`), because the tests drive the real automation
+rather than a mock of it.
+
+**How the portal is tested without a portal.** `test/fixture-portal.mjs` is a
+local HTTP server that serves the DOM the automation depends on, including the
+traps that made it what it is: a radio whose `<input>` is invisible so only its
+label can be clicked, a second radio group with no label that swallows the click
+and commits only on a dispatched `change`, element ids with colons in them, an
+amount field that drops the centimes, a return that opens in a second tab, menu
+entries and buttons that are prefixes of each other, and a session cookie whose
+absence shows up as a perfectly normal-looking page saying *Angemeldet als:
+Benutzer*. `TAXME_BASE_URL` points the server at it, so no test can reach the
+real BE-Login. Every assertion about a click or a submission is made against
+what the fixture **received**, not against what the server reported.
+
+The submission gate has its own file: `test/safety.test.mjs` calls
+`taxme_submit_return` without confirmation, with `confirm:false`, and with every
+value that looks like consent but is not the boolean (`"true"`, `1`, `"yes"`,
+`["true"]`), and asserts each time that the fixture received nothing. The last
+test in that file confirms with `confirm:true` and checks that a submission
+*does* arrive — otherwise the six tests above it would prove nothing.
 
 The smoke test completes the MCP handshake over stdio and asserts the things that
 have actually broken here — a server version drifting from package.json, a tool
@@ -281,6 +312,10 @@ in the dispatcher but missing from the tool list (or advertised and unhandled), 
 required property absent from a schema, and descriptions too thin to choose a
 tool from. The hygiene scan refuses secrets, tracked session files and personal
 identifiers.
+
+Roughly 91% of `index.js` is covered. The rest is mostly the callbacks handed to
+Playwright's `evaluate()`: they execute inside Chromium, so Node's coverage never
+sees them run — they are exercised, just not counted.
 
 ## License
 
