@@ -150,6 +150,19 @@ describe('opening a return', () => {
     assert.equal(back.data.year, 2025);
   });
 
+  test('checking the session mid-edit does not navigate the return away', SLOW, async () => {
+    // The reading tools used to be handed the edit tab, so a status check in
+    // the middle of filling a form took that tab to the case list — unsaved
+    // values and all — and every later edit tool then worked on the wrong page.
+    await srv.call('taxme_goto_section', { name: 'Personalien' });
+    await srv.call('taxme_status');
+    await srv.call('taxme_account_statement');
+    await srv.call('taxme_list_returns');
+    const { data } = await srv.call('taxme_snapshot');
+    assert.match(data.breadcrumb, /TaxMe 2025 > Personalien/,
+      `the return was navigated away: ${data.breadcrumb}`);
+  });
+
   test('a section that does not exist reports the menu instead of guessing', SLOW, async () => {
     const { data } = await srv.call('taxme_goto_section', { name: 'Kryptowährungen' });
     assert.match(data.error, /nicht gefunden/);
