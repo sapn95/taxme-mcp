@@ -153,7 +153,13 @@ async function browser(wantHeaded = false) {
   if (ctx) { await ctx.close().catch(() => {}); ctx = null; }
   // An empty TAXME_PROFILE means "no persistent profile": Playwright then uses a
   // throwaway directory, so nothing of the session is left on disk.
-  if (PROFILE) mkdirSync(PROFILE, { recursive: true });
+  // The profile holds the trusted-device state and the live session in
+  // Chromium's own store — the same material as state.json, and it was created
+  // with the process umask.
+  if (PROFILE) {
+    mkdirSync(PROFILE, { recursive: true, mode: 0o700 });
+    try { chmodSync(PROFILE, 0o700); } catch { /* not ours to tighten */ }
+  }
   const launch = () => chromium.launchPersistentContext(PROFILE, {
     headless: !wantHeaded, executablePath: findChromium(),
     locale: 'de-CH', viewport: { width: 1400, height: 1000 },
@@ -405,6 +411,13 @@ async function fillOne(p, target, value) {
     // visible label, because a caller reading taxme_get_fields sees both.
     await loc.selectOption({ value: String(value) }).catch(() => loc.selectOption({ label: String(value) }));
     return { target, ok: true, selected: f.id, value: await loc.inputValue().catch(() => null) };
+  }
+  // Nothing here fills a password. taxme_login is the only thing that should
+  // ever touch one, and it hands the keyboard to the human; a fill against a
+  // password box would put the value in the request, the readback and the
+  // warning text — three copies in the model's context.
+  if (f.type === 'password') {
+    return { target, ok: false, error: 'Passwortfelder werden nicht befüllt — die Anmeldung läuft über taxme_login.' };
   }
   await loc.fill(String(value));
   // Read the value back. The amount fields are whole-franc converters that
