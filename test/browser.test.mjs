@@ -309,9 +309,16 @@ describe('snapshot and results', () => {
     rmSync(data.screenshot, { force: true });
   });
 
-  test('reads the tax calculation', SLOW, async () => {
+  test('reads the tax calculation, not the menu entry above it', SLOW, async () => {
+    // "Ergebnisse" is also a navigation item, and it comes first in the DOM.
+    // The fixture puts enough prose between the two that a slice taken from
+    // the first occurrence runs out before the figures.
     const { data } = await srv.call('taxme_results');
+    assert.ok(data.text, `no calculation came back: ${JSON.stringify(data).slice(0, 160)}`);
     assert.match(data.text, /Steuerbetrag Kanton und Gemeinde/);
-    assert.match(data.text, /4'?’?321\.00/);
+    // Exactly one separator, not "either or neither": 4321.00 is a different
+    // number badly formatted, and the assertion used to accept it.
+    assert.match(data.text, /4['’]321\.00/);
+    assert.ok(!/Formular in Bearbeitung/.test(data.text), 'it returned the menu instead');
   });
 });

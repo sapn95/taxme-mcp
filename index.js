@@ -655,12 +655,22 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       }
       await p.waitForTimeout(6000);
       const body = (await p.innerText('body')).replace(/\n{2,}/g, '\n');
-      const i = body.indexOf('Ergebnisse');
+      // The word appears in the navigation as well, and that entry comes first
+      // in the DOM: slicing from the first occurrence returned menu text, and
+      // on a page with a long menu the 1500-character window ran out before
+      // the calculation. The panel is the later one.
+      const i = body.lastIndexOf('Ergebnisse');
       if (i < 0) {
         return text({ error: 'Die Seite nach dem Klick enthält keine Ergebnisse', breadcrumb: (await snapshot(p, false)).breadcrumb });
       }
+      const slice = body.slice(i, i + 1500);
+      // And it has to look like a calculation. A heading with a menu under it
+      // is not a result, however confidently it is returned.
+      if (!/\d/.test(slice)) {
+        return text({ error: 'Unter "Ergebnisse" steht keine Berechnung', breadcrumb: (await snapshot(p, false)).breadcrumb, text: slice });
+      }
       await saveState();
-      return text({ text: body.slice(i, i + 1500) });
+      return text({ text: slice });
     }
     if (name === 'taxme_submit_return') {
       const p = await page();
