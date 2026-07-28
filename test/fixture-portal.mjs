@@ -16,6 +16,11 @@
 //     back either as a redirect to AGOV or — worse — as a 200 that merely says
 //     "Angemeldet als: Benutzer"
 //   * a hidden JSF ViewState field carries a token that must never be echoed
+//   * the account statement prints a due date under each year, and the 2024
+//     assessment falls due in 2025, so the page contains years that are not
+//     headings
+//   * a section the portal has switched off leaves its widgets disabled, and a
+//     disabled input is never submitted however checked it looks
 //
 // Nothing here talks to the real portal, and the server binds to 127.0.0.1 on
 // an ephemeral port.
@@ -96,6 +101,15 @@ const personalien = () => `
       <input type="checkbox" id="form:pers:nebenerwerb" value="ja" checked onchange="ev('nebenerwerb', this.checked)">
     </td>
   </tr>
+  <tr>
+    <td>Kinderabzug</td>
+    <td>
+      <!-- Switched off by the portal, and with no label — so the fill takes the
+           JavaScript fallback, which can set the checked property on a disabled
+           input just fine. The browser still never submits it. -->
+      <input type="checkbox" id="form:pers:kinderabzug" value="ja" disabled onchange="ev('kinderabzug', this.checked)">
+    </td>
+  </tr>
   <tr><td>Beruf</td><td><input type="text" id="form:pers:beruf" value=""></td></tr>
   <tr><td>Gemeinde</td><td>
     <select id="form:pers:gemeinde">
@@ -140,6 +154,10 @@ export function start() {
     anonymous: false,   // 200 OK, but "Angemeldet als: Benutzer"
     autoLogin: false,   // the AGOV page completes by itself (stands in for the human)
     rejectSubmit: false, // the portal takes the click and refuses the return
+    editLoggedOut: false, // the case list still works, the edit view bounces to AGOV
+    editBroken: false,  // the edit view answers 200 with something that is not a return
+    forceYear: null,    // the portal opens a different case than the link asked for
+    statementInline: false, // a statement whose years are inside the rows, not above them
   };
 
   const route = (req, res, body) => {
@@ -198,17 +216,36 @@ export function start() {
     }
 
     if (u.pathname === STATEMENT) {
+      // A statement that prints its years inside the rows instead of above
+      // them. Nothing can be tied to a year here, and "nothing outstanding" is
+      // the one answer that must not come back.
+      if (state.statementInline) {
+        return html(shell('Kontoauszug', `
+          <div id="user">Angemeldet als: Test User</div>
+          <h1>Kontoauszug</h1>
+          <table>
+            <tr><td>Steuerjahr 2025 — Kantons- und Gemeindesteuern</td><td>1’234.55</td></tr>
+            <tr><td>Steuerjahr 2025 — Direkte Bundessteuer</td><td>210.00</td></tr>
+          </table>`));
+      }
       // Amounts carry the typographic apostrophe the portal uses, and the
       // trailing "Aktuelle Jahre" block must not be attributed to 2024.
+      //
+      // Every open claim also carries the date it falls due, and the 2024
+      // assessment is payable on 30.09.2025 — so "2025" appears inside the 2024
+      // block. A parser that starts a new year wherever it sees four digits
+      // hands 2024's amounts to 2025 and loses 2024 altogether.
       return html(shell('Kontoauszug', `
         <div id="user">Angemeldet als: Test User</div>
         <h1>Kontoauszug</h1><h2>Offene Beträge</h2>
         <table>
           <tr><th colspan="2">2025</th></tr>
+          <tr><td>Fällig am</td><td>30.09.2026</td></tr>
           <tr><td>Kantons- und Gemeindesteuern</td><td>1’234.55</td></tr>
           <tr><td>Direkte Bundessteuer</td><td>210.00</td></tr>
           <tr><td>Gemeindeabgaben</td><td>0.00</td></tr>
           <tr><th colspan="2">2024</th></tr>
+          <tr><td>Fällig am</td><td>30.09.2025</td></tr>
           <tr><td>Kantons- und Gemeindesteuern</td><td>0.00</td></tr>
           <tr><td>Direkte Bundessteuer</td><td>0.00</td></tr>
           <tr><th colspan="2">Aktuelle Jahre</th></tr>
@@ -217,7 +254,16 @@ export function start() {
     }
 
     if (u.pathname === EDIT) {
-      const year = u.searchParams.get('year') || '2025';
+      // The case list still answers, only the edit view does not: the session
+      // that was good enough to list the returns has expired by the time the
+      // link is clicked.
+      if (state.editLoggedOut) return redirect(`/agov/login?goto=${encodeURIComponent(u.pathname)}`);
+      // 200 OK and no session problem at all — the portal is simply busy. There
+      // is no return on this page, whatever the click was aiming at.
+      if (state.editBroken) return html(shell('Wartung', '<h1>Wartungsarbeiten</h1><p>Bitte später erneut versuchen.</p>'));
+      // And the portal opening a case of its own choosing rather than the one
+      // the link named.
+      const year = state.forceYear || u.searchParams.get('year') || '2025';
       const s = u.searchParams.get('s') || '';
       const btn = form.get('b');
       if (btn) state.clicks.push(btn);
@@ -240,7 +286,14 @@ export function start() {
           <table>
           <tr><td>Steuerbetrag Kanton und Gemeinde</td><td>4’321.00</td></tr>
           <tr><td>Steuerbetrag direkte Bundessteuer</td><td>210.00</td></tr></table>`,
-        wvz: '<h2>Wertschriftenverzeichnis</h2><p>Detail des Verzeichnisses.</p>',
+        // The only save button on this page is the long one. Asking for
+        // "Speichern" here can only be answered by "Speichern und schliessen",
+        // which is a different thing to do to a form — so the reply has to name
+        // the button that was really pressed.
+        wvz: `<h2>Wertschriftenverzeichnis</h2><p>Detail des Verzeichnisses.</p>
+          <form method="post" action="${EDIT}?year=2025&amp;s=wvz">
+            <input type="submit" name="b" value="Speichern und schliessen">
+          </form>`,
         wertschriften: '<h2>Wertschriften</h2><p>Übersicht Wertschriften.</p>',
         liegenschaften: '<h2>Liegenschaften</h2>',
       }[s] || '<p>Bitte wählen Sie links einen Abschnitt.</p>';

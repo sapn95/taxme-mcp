@@ -172,20 +172,20 @@ their own MCP config.
 | --- | --- | --- |
 | `taxme_status` | — | `ok` or `login_required` |
 | `taxme_login` | — | open a **visible** window for the SwissID/AGOV login (waits up to ~8 min); caches the session |
-| `taxme_account_statement` | — | open amounts (CHF) per tax year — Kantons-/Gemeindesteuern, direkte Bundessteuer, Gemeindeabgaben |
+| `taxme_account_statement` | — | open amounts (CHF) per tax year — Kantons-/Gemeindesteuern, direkte Bundessteuer, Gemeindeabgaben. A statement prints a due date under every claim, and the 2024 assessment falls due in 2025, so an amount is only reported under a year the page itself puts it under; when none can be, you get `status: "unparsable"` rather than an empty list that would read as *nothing owed* |
 | `taxme_list_returns` | — | tax returns (Steuererklärungen) with status (*In Bearbeitung* / *Quittiert* …) |
 
 **Navigate & edit a return**
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
-| `taxme_open_return` | `year` (number) | open a return for editing; returns the menu sections (handles the edit popup tab) |
+| `taxme_open_return` | `year` (number) | open a return for editing; returns the menu sections (handles the edit popup tab). Only `status: "ok"` means it is open — the tab that appears is checked against the year you asked for, so an expired session comes back as `login_required`, a page that is no return as `not_open`, and a different case as `wrong_year` with the year the portal actually opened |
 | `taxme_menu` | — | left-menu sections + status of the open return |
 | `taxme_goto_section` | `name` (string) | click a menu section by name (substring); returns its fields |
-| `taxme_get_fields` | — | interactive fields on the current page (`id`, `type`, `value`, `label`, `context`) |
+| `taxme_get_fields` | `limit` (number) | interactive fields on the current page (`id`, `type`, `value`, `label`, `context`, and `locked` when the portal has switched the field off); long forms are cut at `limit` (default 60) and the reply says how many were left out |
 | `taxme_snapshot` | `screenshot` (bool) | breadcrumb + url of the current page; `screenshot: true` writes a PNG and returns its path |
-| `taxme_fill` | `values: [{target, value}]` | set fields — `target` = field `id` **or** a label/context substring; text→typed, radio→value or label, checkbox→`true`/`false` |
-| `taxme_click` | `label` (string) | click a button/link by visible text (*Neuen Eintrag erfassen*, *Speichern*, *Nächste Seite*, *Vorherige Seite*, *Ändern* …) |
+| `taxme_fill` | `values: [{target, value}]` | set fields — `target` = field `id` **or** a label/context substring; `value` must be text, a number or `true`/`false`; text→typed, radio→option value or label, checkbox→`true`/`false` (`ja`/`nein`, `1`/`0`, `on`/`off` are understood too) |
+| `taxme_click` | `label` (string) | click a button/link by visible text (*Neuen Eintrag erfassen*, *Speichern*, *Nächste Seite*, *Vorherige Seite*, *Ändern* …); an exact label wins, a substring is the fallback, and `clicked` names the button that was actually pressed |
 | `taxme_results` | — | read the *Ergebnisse* / Steuerberechnung of the open return |
 
 **Submit (gated)**
@@ -207,6 +207,10 @@ smooths over, so you don't have to:
   a JS `click()` + a dispatched `change` event — plain `.check()` on the input
   doesn't reliably trigger JSF's listeners. In `taxme_fill` a radio `value` may
   be the option value **or** its visible label.
+- **Switched-off widgets.** A section can be *Ausgeschaltet aufgrund Ihrer
+  Eingaben*, and its inputs are then `disabled`. The browser never submits a
+  disabled input, so `taxme_fill` refuses one (`locked: "disabled"`) instead of
+  setting it in JavaScript and reporting a value the portal will never receive.
 - **Amounts are whole francs.** Enter `12000`, not `12000.00` / `12'000`. The
   form drops the centimes silently, so `taxme_fill` reads every value back and
   returns a `warning` when the field ended up holding something other than what
@@ -291,11 +295,14 @@ rather than a mock of it.
 local HTTP server that serves the DOM the automation depends on, including the
 traps that made it what it is: a radio whose `<input>` is invisible so only its
 label can be clicked, a second radio group with no label that swallows the click
-and commits only on a dispatched `change`, element ids with colons in them, an
-amount field that drops the centimes, a return that opens in a second tab, menu
-entries and buttons that are prefixes of each other, and a session cookie whose
-absence shows up as a perfectly normal-looking page saying *Angemeldet als:
-Benutzer*. `TAXME_BASE_URL` points the server at it, so no test can reach the
+and commits only on a dispatched `change`, a checkbox the portal has switched off
+that can still be ticked from JavaScript but never submitted, element ids with
+colons in them, an amount field that drops the centimes, a return that opens in a
+second tab (and one that comes back as the login page, as a maintenance page, or
+as a different tax year), menu entries and buttons that are prefixes of each
+other, a Kontoauszug whose due dates print years that are not headings, and a
+session cookie whose absence shows up as a perfectly normal-looking page saying
+*Angemeldet als: Benutzer*. `TAXME_BASE_URL` points the server at it, so no test can reach the
 real BE-Login. Every assertion about a click or a submission is made against
 what the fixture **received**, not against what the server reported.
 
@@ -313,7 +320,7 @@ required property absent from a schema, and descriptions too thin to choose a
 tool from. The hygiene scan refuses secrets, tracked session files and personal
 identifiers.
 
-Roughly 91% of `index.js` is covered. The rest is mostly the callbacks handed to
+Roughly 90% of `index.js` is covered. The rest is mostly the callbacks handed to
 Playwright's `evaluate()`: they execute inside Chromium, so Node's coverage never
 sees them run — they are exercised, just not counted.
 
