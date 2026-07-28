@@ -236,9 +236,14 @@ async function readFields(p) {
       let label = '';
       if (e.labels && e.labels[0]) label = e.labels[0].innerText;
       const ctxTxt = row ? row.innerText.replace(/\s+/g, ' ').trim().slice(0, 90) : '';
+      // A tool result goes straight into the model's context. On the AGOV login
+      // page one of these inputs is the account password, and reporting its
+      // value put the credential there for the sake of describing a form whose
+      // shape is the only thing anyone needs.
+      const masked = e.type === 'password' && e.value ? '(hidden)' : e.value;
       fields.push({
         id: e.id, tag: e.tagName.toLowerCase(), type: e.type || '',
-        value: (e.type === 'radio' || e.type === 'checkbox') ? (e.checked ? 'checked' : 'unchecked') + ':' + e.value : e.value,
+        value: (e.type === 'radio' || e.type === 'checkbox') ? (e.checked ? 'checked' : 'unchecked') + ':' + e.value : masked,
         label: (label || '').replace(/\s+/g, ' ').trim().slice(0, 80),
         context: ctxTxt,
       });

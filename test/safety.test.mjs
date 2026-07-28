@@ -107,6 +107,29 @@ describe('secrets', () => {
     assert.ok(!blob.includes(portal.VIEWSTATE), 'the JSF ViewState surfaced in the output');
   });
 
+  test('a password box on the login page is described, not read out', SLOW, async () => {
+    // taxme_get_fields is generic: an agent may call it on any page, and the
+    // AGOV login page has a password box. Reporting its shape is useful;
+    // reporting its value puts the account password into the model's context.
+    const fresh = await startServer({
+      TAXME_BASE_URL: portal.base,
+      TAXME_PROFILE: join(mkdtempSync(join(tmpdir(), 'taxme-pw-')), 'profile'),
+    }, { timeout: 240000 });
+    try {
+      // A fresh server sits on about:blank until something navigates; with no
+      // session this lands on the login page.
+      const st = await fresh.call('taxme_status', {});
+      assert.equal(st.data.status, 'login_required', 'the fixture must not consider us logged in here');
+      const { raw, data } = await fresh.call('taxme_get_fields', {});
+      const pw = (data.fields || []).find(f => f.type === 'password');
+      assert.ok(pw, `no password field was seen at all: ${raw.slice(0, 200)}`);
+      assert.equal(pw.value, '(hidden)', 'the value must be masked, and the field still reported');
+      assert.ok(!raw.includes('hunter2'), 'the password itself must not appear anywhere in the result');
+    } finally {
+      await fresh.stop();
+    }
+  });
+
   test('nothing but JSON-RPC is written to stdout, and stderr stays quiet', SLOW, async () => {
     const err = srv.stderr();
     assert.ok(!/Error|Cannot find|ERR_|at Object\./.test(err), `noisy stderr: ${err.slice(0, 400)}`);

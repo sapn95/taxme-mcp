@@ -153,7 +153,12 @@ export function start() {
     // AGOV/SwissID stands in for the identity provider. `auto=1` means the human
     // completes it; without it the page just sits there, as it does in reality.
     if (u.pathname === '/agov/login') {
-      return html(shell('AGOV Login', `<h1>AGOV Anmeldung</h1><a id="go" href="/agov/callback">Weiter mit AGOV</a>
+      // The real login page carries a password box, and the field reader is a
+      // generic tool an agent may call on any page — including this one.
+      return html(shell('AGOV Login', `<h1>AGOV Anmeldung</h1>
+        <label for="agov:user">Benutzer</label><input type="text" id="agov:user" value="test-user">
+        <label for="agov:pw">Passwort</label><input type="password" id="agov:pw" value="hunter2-not-a-real-password">
+        <a id="go" href="/agov/callback">Weiter mit AGOV</a>
         ${u.searchParams.get('auto') === '1' ? '<script>setTimeout(() => { location.href = "/agov/callback"; }, 500);</script>' : ''}`));
     }
     if (u.pathname === '/agov/callback') {
