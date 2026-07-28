@@ -244,7 +244,10 @@ async function listReturns(p) {
     const out = [];
     for (const tr of document.querySelectorAll('table tr')) {
       const cells = [...tr.querySelectorAll('td, th')].map(c => c.innerText.replace(/\s+/g, ' ').trim());
-      if (cells.length >= 2 && /Steuererkl|20\d{2}/.test(cells[0])) out.push({ fall: cells[0], status: cells[1] });
+      // A data row, not a header: "Steuererklärung / Status" as a header used to
+      // become a return with the status "Status". A year is what makes it real.
+      if (tr.querySelector('th')) continue;
+      if (cells.length >= 2 && /\b20\d{2}\b/.test(cells[0])) out.push({ fall: cells[0], status: cells[1] });
     }
     return out;
   });
@@ -324,9 +327,15 @@ async function snapshot(p, wantShot) {
     // machine can read the result. A private directory, made once, 0700.
     shotDir ??= mkdtempSync(join(tmpdir(), 'taxme-shots-'));
     const path = join(shotDir, `shot-${randomUUID()}.png`);
-    await p.screenshot({ path }).catch(() => {});
-    try { chmodSync(path, 0o600); } catch { /* the screenshot may not exist */ }
-    out.screenshot = path;
+    // The path used to be reported whether or not anything was written, so a
+    // caller was told a screenshot of the submission existed when none did.
+    try {
+      await p.screenshot({ path });
+      chmodSync(path, 0o600);
+      out.screenshot = path;
+    } catch (e) {
+      out.screenshot_error = e.message.split('\n')[0].slice(0, 120);
+    }
   }
   return out;
 }
@@ -608,6 +617,16 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
     }
     if (name === 'taxme_fill') {
       if (!Array.isArray(args.values)) return text({ error: 'values muss eine Liste von {target, value} sein' });
+      // Checked before a browser is touched. An item without `value` reached
+      // the fill and wrote the literal string "undefined" into the field — a
+      // malformed request quietly corrupting a draft tax return.
+      const badItem = args.values.findIndex(v =>
+        !v || typeof v !== 'object'
+        || typeof v.target !== 'string' || !v.target.trim()
+        || !Object.hasOwn(v, 'value') || v.value === undefined);
+      if (badItem >= 0) {
+        return text({ error: `values[${badItem}] braucht ein nicht-leeres target und ein value`, got: args.values[badItem] ?? null });
+      }
       const p = await page();
       const results = [];
       for (const v of args.values) {
