@@ -39,7 +39,18 @@ const PERSONAL = [
 // authenticated registry URL ends up. Binary assets are still skipped for the
 // text rules — there is nothing to match — but a tracked PDF or screenshot is
 // reported, because in these repos there is no reason for one to exist.
-const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+//
+// -z, because plain `git ls-files` does not print a path — it prints a display
+// form of one. Anything outside printable ASCII comes back wrapped in quotes
+// with the bytes escaped, so `Rechnung-Zürich.txt` arrived as
+// "Rechnung-Z\303\274rich.txt": neither `git show` nor readFileSync could open
+// it, both throws were swallowed as "not staged", and the file was skipped
+// without a word while the summary still called every tracked file clean. An
+// AWS key in a file with an umlaut in its name passed the whole gate. The same
+// escaping also stopped the .env and tracked-document rules below from matching,
+// because the name they saw ended in a quote. -z writes the real bytes and
+// separates them with NUL, so there is nothing to unescape.
+const tracked = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
 const BINARY = /\.(png|jpg|jpeg|gif|pdf|ico|zip|gz)$/i;
 const files = tracked.filter(f => !BINARY.test(f));
 
@@ -61,8 +72,13 @@ for (const f of files) {
   // copy would otherwise sail through. What `npm publish` packs is the WORKING
   // TREE — so preferring the index, as this did for a while, let an unstaged
   // secret into a tarball instead. Identical content is scanned once.
+  //
+  // stderr goes nowhere on purpose: execFileSync forwards the child's by
+  // default, so every path git could not resolve printed a two-line "fatal:
+  // ambiguous argument" into the report — noise that reads like a scanner
+  // failure and that the catch was written to keep quiet about.
   const versions = new Set();
-  try { versions.add(execFileSync('git', ['show', `:${f}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })); } catch { /* not staged */ }
+  try { versions.add(execFileSync('git', ['show', `:${f}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* not staged */ }
   try { versions.add(readFileSync(f, 'utf8')); } catch { /* deleted from disk */ }
   if (!versions.size) continue;
   const body = [...versions].join('\n');
@@ -109,7 +125,7 @@ for (const f of tracked) {
 // org code. On a shallow CI clone this sees only the tip, which is still worth
 // checking — a bad identity is introduced at the tip, not retroactively.
 try {
-  const idents = new Set(execFileSync('git', ['log', '--all', '--format=%ae%n%ce'], { encoding: 'utf8' })
+  const idents = new Set(execFileSync('git', ['log', '--all', '--format=%ae%n%ce'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
     .split('\n').filter(Boolean));
   for (const mail of idents) {
     if (!MAIL_OK.test(mail)) { console.log(`FAIL  commit identity is not anonymous (@${mail.split('@')[1]})`); bad++; }
