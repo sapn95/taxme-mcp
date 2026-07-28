@@ -131,6 +131,23 @@ describe('opening a return', () => {
     assert.equal(data.breadcrumb, 'TaxMe 2025 > Wertschriftenverzeichnis');
   });
 
+  test('opening a second return moves the tools onto it, not back to the first', SLOW, async () => {
+    // The tools used to work on "the first edit tab there is" rather than on the
+    // one that was opened. Against this fixture that happens to pick the right
+    // tab anyway — this test passes with the tracking removed, so it is not
+    // proof of the old bug — but "whichever tab comes first" is not something
+    // to leave deciding which tax year gets written to.
+    const second = await srv.call('taxme_open_return', { year: 2024 });
+    assert.equal(second.data.status, 'ok', JSON.stringify(second.data));
+    assert.equal(second.data.year, 2024, 'it says which return it opened');
+    const { data } = await srv.call('taxme_goto_section', { name: 'Personalien' });
+    assert.match(data.breadcrumb, /TaxMe 2024/, `still on the other return: ${data.breadcrumb}`);
+
+    // Back to 2025 — the rest of this file works on that one.
+    const back = await srv.call('taxme_open_return', { year: 2025 });
+    assert.equal(back.data.year, 2025);
+  });
+
   test('a section that does not exist reports the menu instead of guessing', SLOW, async () => {
     const { data } = await srv.call('taxme_goto_section', { name: 'Kryptowährungen' });
     assert.match(data.error, /nicht gefunden/);
