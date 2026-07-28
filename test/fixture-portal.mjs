@@ -188,7 +188,10 @@ export function start() {
         <div id="user">Angemeldet als: Test User</div>
         <h1>Fallübersicht</h1>
         <table>
-          <tr><th>Fall</th><th>Status</th></tr>
+          <!-- "Steuererklärung" in the header on purpose: a parser that looks
+               for that word rather than for a year turns this row into a return
+               whose status is the word "Status". -->
+          <tr><th>Steuererklärung</th><th>Status</th></tr>
           <tr><td><a href="${EDIT}?year=2025" target="_blank">Steuererklärung 2025</a></td><td>In Bearbeitung</td></tr>
           <tr><td><a href="${EDIT}?year=2024" target="_blank">Steuererklärung 2024</a></td><td>Eingereicht</td></tr>
         </table>`));

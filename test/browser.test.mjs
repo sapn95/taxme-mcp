@@ -88,6 +88,8 @@ describe('reading', () => {
   });
 
   test('lists the returns with their status, and skips the header row', SLOW, async () => {
+    // The header says "Steuererklärung" too. A parser that looks for that word
+    // rather than for a year reported it as a return with the status "Status".
     const { data } = await srv.call('taxme_list_returns');
     assert.equal(data.status, 'ok');
     assert.deepEqual(data.returns, [
@@ -156,6 +158,15 @@ describe('opening a return', () => {
 });
 
 describe('filling the form', () => {
+  test('an item without a value is refused before the browser is touched', SLOW, async () => {
+    // It used to reach the fill and write the literal string "undefined" into
+    // the field — a malformed request quietly corrupting a draft.
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'Beruf' }] });
+    assert.match(data.error, /values\[0\]/);
+    assert.match(data.error, /value/);
+  });
+
+
   before(async () => { await srv.call('taxme_goto_section', { name: 'Personalien' }); });
 
   test('lists the fields with their JSF ids, labels and row context', SLOW, async () => {
