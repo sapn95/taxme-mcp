@@ -124,6 +124,23 @@ async function seedFromState(c) {
     if (Array.isArray(saved.cookies) && saved.cookies.length) {
       await c.addCookies(saved.cookies).catch(() => {});
     }
+    // storageState() saves origins too, and this threw them away — so any
+    // authentication state the portal keeps in localStorage was lost on a
+    // restart while the comment above promised the full session came back.
+    for (const o of saved.origins || []) {
+      if (!o?.origin || !Array.isArray(o.localStorage) || !o.localStorage.length) continue;
+      const page = await c.newPage().catch(() => null);
+      if (!page) continue;
+      try {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.evaluate(entries => {
+          for (const { name, value } of entries) {
+            try { localStorage.setItem(name, value); } catch { /* quota or a blocked origin */ }
+          }
+        }, o.localStorage);
+      } catch { /* an origin we cannot reach is one we cannot seed */ }
+      await page.close().catch(() => {});
+    }
   } catch { /* ignore unreadable/corrupt state.json */ }
 }
 
@@ -663,14 +680,21 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       if (i < 0) {
         return text({ error: 'Die Seite nach dem Klick enthält keine Ergebnisse', breadcrumb: (await snapshot(p, false)).breadcrumb });
       }
-      const slice = body.slice(i, i + 1500);
-      // And it has to look like a calculation. A heading with a menu under it
-      // is not a result, however confidently it is returned.
-      if (!/\d/.test(slice)) {
+      const rest = body.slice(i);
+      const slice = rest.slice(0, 1500);
+      // And it has to look like a calculation. Any digit used to count, so
+      // "Für Steuerjahr 2025 ist keine Berechnung verfügbar" came back as a
+      // successful result — a year is a digit. An amount is the evidence.
+      if (!/\d[\d'’.]*[.,]\d{2}\b/.test(slice)) {
         return text({ error: 'Unter "Ergebnisse" steht keine Berechnung', breadcrumb: (await snapshot(p, false)).breadcrumb, text: slice });
       }
       await saveState();
-      return text({ text: slice });
+      // Cut, and say so. A calculation with more rows than fit was presented
+      // as the whole of it.
+      return text({
+        text: slice,
+        ...(rest.length > 1500 ? { truncated: rest.length - 1500, hint: 'die Berechnung ist länger als der zurückgegebene Ausschnitt' } : {}),
+      });
     }
     if (name === 'taxme_submit_return') {
       const p = await page();
