@@ -82,6 +82,19 @@ describe('the submit gate', () => {
   // Last, because it is the only test here that is allowed to submit — and
   // because without it the assertions above would pass against a fixture that
   // simply cannot accept a submission.
+  test('a click the portal did not honour is not a submission', SLOW, async () => {
+    // The one wrong answer this server must never give. It used to report
+    // submitted:true purely because something with the right label had been
+    // pressed — validation failures, an expired session, all of it invisible.
+    await portal.control({ rejectSubmit: true });
+    const { data } = await call('taxme_submit_return', { confirm: true });
+    await portal.control({ rejectSubmit: false });
+    assert.equal(data.submitted, false, `claimed a submission the portal refused: ${JSON.stringify(data).slice(0, 200)}`);
+    assert.match(data.error, /bestätigt keine Einreichung/);
+    assert.deepEqual(portal.state.submitted, [], 'and the fixture agrees nothing arrived');
+    if (data.screenshot) rmSync(data.screenshot, { force: true });
+  });
+
   test('confirm:true really does submit, which is what makes the rest mean something', SLOW, async () => {
     const { data } = await call('taxme_submit_return', { confirm: true });
     assert.equal(data.submitted, true, JSON.stringify(data));

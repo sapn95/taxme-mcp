@@ -139,6 +139,7 @@ export function start() {
     events: [],         // change events fired by the form widgets
     anonymous: false,   // 200 OK, but "Angemeldet als: Benutzer"
     autoLogin: false,   // the AGOV page completes by itself (stands in for the human)
+    rejectSubmit: false, // the portal takes the click and refuses the return
   };
 
   const route = (req, res, body) => {
@@ -217,7 +218,11 @@ export function start() {
       const s = u.searchParams.get('s') || '';
       const btn = form.get('b');
       if (btn) state.clicks.push(btn);
-      if (btn && /einreichen/i.test(btn)) state.submitted.push({ year, at: Date.now() });
+      // rejectSubmit models the portal refusing: the click arrives, nothing is
+      // recorded, and the page comes back without a confirmation. That is what
+      // validation failure and an expired session look like from outside.
+      const submitting = btn && /einreichen/i.test(btn);
+      if (submitting && !state.rejectSubmit) state.submitted.push({ year, at: Date.now() });
 
       const bodyFor = {
         personalien: personalien(),

@@ -640,8 +640,25 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         const b = await byText(p, label, true);
         if (b) { await b.click(); clicked = label; break; }
       }
+      if (!clicked) {
+        return text({ submitted: false, error: 'Kein Einreiche-Button auf der Abschluss-Seite gefunden', ...(await snapshot(p, true)) });
+      }
       await p.waitForTimeout(6000);
-      return text({ submitted: !!clicked, clicked, ...(await snapshot(p, true)) });
+      // A click is not a submission. The portal can reject the return for its
+      // own reasons — validation, an expired session — and this reported
+      // "submitted: true" purely because something with the right label had
+      // been pressed. That is the one wrong answer this server must never give.
+      const body = await p.innerText('body').catch(() => '');
+      const confirmed = /wurde eingereicht|erfolgreich eingereicht|Einreichung erfolgreich|eingereicht am/i.test(body);
+      if (!confirmed) {
+        return text({
+          submitted: false,
+          clicked,
+          error: 'Der Button wurde geklickt, aber die Seite bestätigt keine Einreichung — bitte im Portal prüfen, bevor erneut eingereicht wird.',
+          ...(await snapshot(p, true)),
+        });
+      }
+      return text({ submitted: true, clicked, ...(await snapshot(p, true)) });
     }
     return text({ error: `unknown tool ${name}` });
   } catch (e) {
