@@ -87,6 +87,29 @@ describe('reading', () => {
       'the trailing "Aktuelle Jahre" block must not be counted as 2024');
   });
 
+  test('a due date is not a year heading', SLOW, async () => {
+    // The 2024 assessment falls due on 30.09.2025. Starting a new year block
+    // wherever four digits appear handed 2024's zeroes to 2025 and dropped 2024
+    // — the statement then said the 2025 bill was settled while the page showed
+    // 1'234.55 still open, which is the wrong answer in the direction that
+    // costs money.
+    const { data } = await srv.call('taxme_account_statement');
+    assert.equal(data.open_amounts_chf['2025'].kantons_gemeinde, "1'234.55",
+      `the due date below the 2024 heading moved the amounts: ${JSON.stringify(data.open_amounts_chf)}`);
+    assert.ok(data.open_amounts_chf['2024'], 'and 2024 must not disappear into the date above it');
+    assert.equal(data.open_amounts_chf['2024'].bund, '0.00');
+  });
+
+  test('amounts with no year heading are refused, not reported as nothing owed', SLOW, async () => {
+    // An empty result is an answer: it reads as "you owe nothing". A page whose
+    // layout we cannot tie to a year has to say so instead.
+    await portal.control({ statementInline: true });
+    const { data } = await srv.call('taxme_account_statement');
+    await portal.control({ statementInline: false });
+    assert.notEqual(data.status, 'ok', `reported a clean slate: ${JSON.stringify(data)}`);
+    assert.match(data.error, /Jahresüberschrift/);
+  });
+
   test('lists the returns with their status, and skips the header row', SLOW, async () => {
     // The header says "Steuererklärung" too. A parser that looks for that word
     // rather than for a year reported it as a return with the status "Status".
@@ -163,6 +186,47 @@ describe('opening a return', () => {
       `the return was navigated away: ${data.breadcrumb}`);
   });
 
+  test('a tab that came back as the login page is not an open return', SLOW, async () => {
+    // The session that was good enough to list the returns can be gone by the
+    // time the link is clicked. The tool used to report status ok and the year
+    // it had been asked for, with an empty menu, while the tab sat on the AGOV
+    // login form — and every later edit tool then worked on that form.
+    await portal.control({ editLoggedOut: true });
+    const { data } = await srv.call('taxme_open_return', { year: 2025 });
+    await portal.control({ editLoggedOut: false });
+    assert.notEqual(data.status, 'ok', `claimed the return was open: ${JSON.stringify(data)}`);
+    assert.equal(data.status, 'login_required', JSON.stringify(data));
+    assert.match(data.error, /taxme_login/);
+
+    const back = await srv.call('taxme_open_return', { year: 2025 });
+    assert.equal(back.data.status, 'ok', JSON.stringify(back.data));
+  });
+
+  test('a maintenance page is not a return either, and is not called a login', SLOW, async () => {
+    await portal.control({ editBroken: true });
+    const { data } = await srv.call('taxme_open_return', { year: 2025 });
+    await portal.control({ editBroken: false });
+    assert.equal(data.status, 'not_open', JSON.stringify(data));
+    assert.match(data.error, /liess sich nicht öffnen/);
+
+    const back = await srv.call('taxme_open_return', { year: 2025 });
+    assert.equal(back.data.status, 'ok', JSON.stringify(back.data));
+  });
+
+  test('a portal that opens a different case says so instead of renaming it', SLOW, async () => {
+    // Reporting the requested year while the page shows another one puts every
+    // later fill into the wrong tax return under the right heading.
+    await portal.control({ forceYear: '2024' });
+    const { data } = await srv.call('taxme_open_return', { year: 2025 });
+    await portal.control({ forceYear: null });
+    assert.equal(data.status, 'wrong_year', `2024 was opened and reported as 2025: ${JSON.stringify(data)}`);
+    assert.equal(data.opened_year, 2024);
+
+    const back = await srv.call('taxme_open_return', { year: 2025 });
+    assert.equal(back.data.status, 'ok', JSON.stringify(back.data));
+    assert.match(back.data.breadcrumb, /TaxMe 2025/, 'and it reports what the page says, not what it was asked');
+  });
+
   test('a section that does not exist reports the menu instead of guessing', SLOW, async () => {
     const { data } = await srv.call('taxme_goto_section', { name: 'Kryptowährungen' });
     assert.match(data.error, /nicht gefunden/);
@@ -179,6 +243,17 @@ describe('filling the form', () => {
     assert.match(data.error, /value/);
   });
 
+  for (const value of [null, {}, [], ['Koch']]) {
+    test(`a value of ${JSON.stringify(value)} is refused, not typed out`, SLOW, async () => {
+      // Only the `undefined` spelling was caught. null was typed in as the word
+      // "null", an object as "[object Object]" and an empty array wiped the
+      // field — each reported as a successful fill, each a draft quietly
+      // corrupted by a malformed request.
+      const { data } = await srv.call('taxme_fill', { values: [{ target: 'form:pers:beruf', value }] });
+      assert.match(data.error ?? '', /values\[0\]/, `it was accepted: ${JSON.stringify(data).slice(0, 200)}`);
+      assert.equal(data.results, undefined, 'nothing was filled');
+    });
+  }
 
   before(async () => { await srv.call('taxme_goto_section', { name: 'Personalien' }); });
 
@@ -221,6 +296,44 @@ describe('filling the form', () => {
     const off = await srv.call('taxme_fill', { values: [{ target: 'Kirchensteuerpflichtig', value: false }] });
     assert.equal(off.data.results[0].checkbox, false);
     assert.equal(off.data.fields_after.find(f => f.id === 'form:pers:kirche').value, 'unchecked:ja');
+  });
+
+  test('"ja" ticks the box it is the value of, rather than clearing it', SLOW, async () => {
+    // taxme_get_fields shows this box as "unchecked:ja", so "ja" is the obvious
+    // thing to send back. Only true / "true" / "checked" / 1 counted as ticked
+    // and everything else silently meant cleared — the box stayed empty, the
+    // reply said checkbox:false and ok:true, and church tax liability was
+    // recorded as "no" while the request had said yes.
+    for (const value of ['ja', 'yes', '1', 'x']) {
+      const off = await srv.call('taxme_fill', { values: [{ target: 'Kirchensteuerpflichtig', value: false }] });
+      assert.equal(off.data.fields_after.find(f => f.id === 'form:pers:kirche').value, 'unchecked:ja');
+      const on = await srv.call('taxme_fill', { values: [{ target: 'Kirchensteuerpflichtig', value }] });
+      assert.equal(on.data.results[0].ok, true, `${JSON.stringify(value)}: ${JSON.stringify(on.data.results[0])}`);
+      assert.equal(on.data.fields_after.find(f => f.id === 'form:pers:kirche').value, 'checked:ja',
+        `${JSON.stringify(value)} left the box empty and called it done`);
+    }
+  });
+
+  test('a word that is neither yes nor no is refused, not read as no', SLOW, async () => {
+    await srv.call('taxme_fill', { values: [{ target: 'Kirchensteuerpflichtig', value: true }] });
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'Kirchensteuerpflichtig', value: 'vielleicht' }] });
+    assert.equal(data.results[0].ok, false, JSON.stringify(data.results[0]));
+    assert.ok(data.results[0].accepts?.ja?.includes('ja'), `it says what it takes: ${JSON.stringify(data.results[0])}`);
+    assert.equal(data.fields_after.find(f => f.id === 'form:pers:kirche').value, 'checked:ja',
+      'and it left the box as it found it');
+    await srv.call('taxme_fill', { values: [{ target: 'Kirchensteuerpflichtig', value: false }] });
+  });
+
+  test('a checkbox the portal has switched off is refused, not forced', SLOW, async () => {
+    // It has no label, so this is the JavaScript fallback: it set `checked` on
+    // a disabled input, dispatched the change and reported the box as ticked.
+    // The browser never submits a disabled input, so the portal heard nothing —
+    // an answer reported as given that was never given.
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'form:pers:kinderabzug', value: true }] });
+    assert.equal(data.results[0].ok, false, `claimed a disabled box was ticked: ${JSON.stringify(data.results[0])}`);
+    assert.equal(data.results[0].locked, 'disabled');
+    assert.equal(data.fields_after.find(f => f.id === 'form:pers:kinderabzug').value, 'unchecked:ja',
+      'and it really is still empty');
   });
 
   test('unticks a checkbox that has no label — the widget the fallback is for', SLOW, async () => {
@@ -296,6 +409,21 @@ describe('clicking', () => {
     const before = portal.state.clicks.length;
     await srv.call('taxme_click', { label: 'Nächste Seite' });
     assert.deepEqual(portal.state.clicks.slice(before), ['Nächste Seite']);
+  });
+
+  test('names the button it really pressed when only a longer one exists', SLOW, async () => {
+    // On this page the only save button reads "Speichern und schliessen", and
+    // the substring fallback presses it. The reply used to echo the label it
+    // had been given, so a form that had been saved AND closed came back as
+    // "Speichern" — and the next tool worked on a page that was gone.
+    await srv.call('taxme_goto_section', { name: 'Wertschriftenverzeichnis' });
+    const before = portal.state.clicks.length;
+    const { data } = await srv.call('taxme_click', { label: 'Speichern' });
+    assert.deepEqual(portal.state.clicks.slice(before), ['Speichern und schliessen'],
+      'the fixture must have received the long button — otherwise this proves nothing');
+    assert.equal(data.clicked, 'Speichern und schliessen', `it reported a click it did not make: ${JSON.stringify(data.clicked)}`);
+    assert.equal(data.requested, 'Speichern', 'and says what had been asked for');
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
   });
 
   test('follows a link that changes the url, and says that it did', SLOW, async () => {

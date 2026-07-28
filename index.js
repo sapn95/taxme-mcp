@@ -13,7 +13,9 @@
 // that with a dispatched change event, because the input itself is hidden and
 // the widget only commits on `change`. The edit view opens in its own tab. The
 // amount fields take whole francs only: a value they alter is read back and
-// reported as a warning rather than quietly accepted.
+// reported as a warning rather than quietly accepted. A field the portal has
+// switched off is refused, because the browser never submits a disabled input
+// however set it looks afterwards.
 //
 // SAFETY: this server fills DRAFTS. The final submission (Abschluss →
 // einreichen) is only done by `taxme_submit_return`, which requires an
@@ -226,6 +228,12 @@ async function readingPage() {
   return other || c.newPage();
 }
 
+// A URL that belongs to the identity provider rather than to the portal. Used
+// by `ensure` to spot an expired session, and by `taxme_open_return` to say why
+// the edit view it clicked on never appeared.
+const looksLikeLogin = u =>
+  u.includes('swissid.ch') || u.includes('agov') || u.includes('/Portal/Error') || /\/login|anmeld/i.test(u);
+
 async function ensure(p, url, timeout = 30000) {
   const res = await p.goto(url, { waitUntil: 'domcontentloaded', timeout });
   await p.waitForTimeout(2500);
@@ -236,7 +244,7 @@ async function ensure(p, url, timeout = 30000) {
   const code = res?.status?.() ?? 200;
   if (code >= 400) return 'unreachable';
   const u = p.url();
-  if (u.includes('swissid.ch') || u.includes('agov') || u.includes('/Portal/Error') || /\/login|anmeld/i.test(u)) return 'login_required';
+  if (looksLikeLogin(u)) return 'login_required';
   const body = await p.innerText('body').catch(() => '');
   if (/Angemeldet als:\s*(Benutzer|\n|$)/.test(body)) return 'login_required';
   await saveState();   // confirmed live session — refresh the cached state
@@ -251,14 +259,34 @@ async function readAccountStatement(p) {
   if (st !== 'ok') return { status: st };
   await p.waitForTimeout(2500);
   const text = await p.innerText('body');
+  // A year heading stands alone on its line. Any "20xx" anywhere in the text
+  // used to start a new block, and a Kontoauszug is full of dates — the 2024
+  // assessment falls due on 30.09.2025 — so a due date closed the year it was
+  // printed under and opened another one, and the amounts below it were
+  // reported against the year of that date. The statement then said 2025 was
+  // settled while the page showed over a thousand francs still open.
+  const blocks = new Map();
+  let current = null;
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    const head = /^(?:Steuerjahr|Jahr)?\s*(20\d{2})\s*:?$/.exec(t);
+    if (head) { current = head[1]; if (!blocks.has(current)) blocks.set(current, []); continue; }
+    // "Aktuelle Jahre" is a summary of its own and belongs to no tax year.
+    if (/^Aktuelle Jahre/.test(t)) { current = null; continue; }
+    if (current) blocks.get(current).push(line);
+  }
   const years = {};
-  const re = /(\b20\d{2})\b([\s\S]*?)(?=\b20\d{2}\b|Aktuelle Jahre|$)/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const block = m[2];
+  for (const [year, lines] of blocks) {
+    const block = lines.join('\n');
     const grab = label => { const r = new RegExp(label + "\\s+([0-9'’.]+)").exec(block); return r ? r[1].replace(/[’']/g, "'") : null; };
     const kg = grab('Kantons- und Gemeindesteuern'), bund = grab('Direkte Bundessteuer');
-    if (kg !== null || bund !== null) years[m[1]] = { kantons_gemeinde: kg, bund, gemeindeabgaben: grab('Gemeindeabgaben') };
+    if (kg !== null || bund !== null) years[year] = { kantons_gemeinde: kg, bund, gemeindeabgaben: grab('Gemeindeabgaben') };
+  }
+  // An empty result reads as "nothing outstanding", which is an answer, not a
+  // parse failure. If the page carries the amounts but no heading we could tie
+  // them to, say so rather than reporting a clean slate the page never showed.
+  if (!Object.keys(years).length && /Kantons- und Gemeindesteuern|Direkte Bundessteuer/.test(text)) {
+    return { status: 'unparsable', error: 'Der Kontoauszug zeigt Beträge, aber keine Jahresüberschrift, der sie sich zuordnen lassen — bitte im Portal nachsehen.' };
   }
   return { status: 'ok', open_amounts_chf: years };
 }
@@ -320,6 +348,10 @@ async function readFields(p, limit = 60) {
         value: (e.type === 'radio' || e.type === 'checkbox') ? (e.checked ? 'checked' : 'unchecked') + ':' + e.value : masked,
         label: (label || '').replace(/\s+/g, ' ').trim().slice(0, 80),
         context: ctxTxt,
+        // A field the portal has switched off — a whole section can be
+        // "Ausgeschaltet aufgrund Ihrer Eingaben" — takes no value at all, and
+        // saying so here is what lets the fill refuse it instead of pretending.
+        ...(e.disabled || e.readOnly ? { locked: e.disabled ? 'disabled' : 'readonly' } : {}),
       });
     }
     return fields;
@@ -396,6 +428,24 @@ async function setChoice(p, id, want = true) {
   }, { i: id, want });
 }
 
+// What a caller may say to tick or clear a checkbox. Only `true`, "true",
+// "checked" and 1 used to mean ticked and everything else — including "ja",
+// "yes" and "1" — quietly meant cleared, which was then read back and reported
+// as the state that had been asked for. taxme_get_fields shows such a box as
+// "unchecked:ja", so "ja" is the obvious thing for a caller to send back, and
+// it answered the opposite question: on a tax return, church tax liability
+// recorded as "no" while the reply said the box was set as requested. A word
+// neither list knows is now refused, as it already was for a radio.
+const CHECKBOX_ON = ['true', 'checked', 'ja', 'yes', 'on', 'x', '1'];
+const CHECKBOX_OFF = ['false', 'unchecked', 'nein', 'no', 'off', '0', ''];
+function wantChecked(value) {
+  if (typeof value === 'boolean') return value;
+  const v = String(value).trim().toLowerCase();
+  if (CHECKBOX_ON.includes(v)) return true;
+  if (CHECKBOX_OFF.includes(v)) return false;
+  return null;
+}
+
 // Resolve a target (exact id, then exact label, then a substring) to one field.
 // A substring that matches several fields used to take the first quietly, which
 // on a tax form means filling a number into whichever box happened to come
@@ -426,9 +476,21 @@ async function resolveField(p, target) {
   return undefined;
 }
 
+// A locked field cannot be answered, and the difference matters: the widgets
+// that carry a <label> merely made Playwright retry the click for thirty
+// seconds before giving up, but the label-less JSF widgets went down the
+// JavaScript fallback, which set `checked` outright, dispatched the change and
+// reported the box as ticked. The browser never submits a disabled input, so
+// the portal never heard the answer that had just been reported as given.
+const lockedResult = (target, f) => ({
+  target, ok: false, locked: f.locked,
+  error: `Feld "${f.id}" ist ${f.locked === 'readonly' ? 'schreibgeschützt' : 'deaktiviert'} — das Portal nimmt hier keinen Wert entgegen`,
+});
+
 async function fillOne(p, target, value) {
   const f = await resolveField(p, target);
   if (!f) return { target, ok: false, error: 'Feld nicht gefunden' };
+  if (f.locked) return lockedResult(target, f);
   if (f.type === 'radio') {
     // value can be the radio value or a label; find the matching radio in the group
     const all = await readFields(p, null);
@@ -444,11 +506,21 @@ async function fillOne(p, target, value) {
         options: group.map(x => ({ id: x.id, value: x.value.split(':').slice(1).join(':'), label: x.label })),
       };
     }
+    // The member the value picked, not the one the lookup landed on: a group
+    // can have a single option switched off.
+    if (pick.locked) return lockedResult(target, pick);
     await setChoice(p, pick.id, true);
     return { target, ok: true, set: pick.id };
   }
   if (f.type === 'checkbox') {
-    const want = value === true || value === 'true' || value === 'checked' || value === 1;
+    const want = wantChecked(value);
+    if (want === null) {
+      return {
+        target, ok: false,
+        error: `Wert "${value}" ist für eine Checkbox weder ein Ja noch ein Nein`,
+        accepts: { ja: [...CHECKBOX_ON], nein: [...CHECKBOX_OFF] },
+      };
+    }
     const isOn = f.value.startsWith('checked');
     if (want !== isOn) await setChoice(p, f.id, want);
     // Read it back. Claiming a state without looking is how the inverted
@@ -513,25 +585,32 @@ async function clickByText(p, label) {
   const before = p.url();
   const el = await byText(p, label, true);
   if (!el) throw new Error(`kein klickbares Element "${label}"`);
+  // What the button says, read before the click takes the page away. The reply
+  // used to echo the label the caller had sent, and the last resort above is a
+  // substring match: on a page whose only save button reads "Speichern und
+  // schliessen", asking for "Speichern" closed the form and came back saying
+  // "Speichern" had been clicked, so the next tool worked on a form that was no
+  // longer open.
+  const real = (await el.evaluate(e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || label;
   await el.click({ timeout: 10000 });
   await p.waitForTimeout(4000).catch(() => {});
   await p.waitForLoadState('domcontentloaded').catch(() => {});
-  return { clicked: label, url_changed: p.url() !== before };
+  return { clicked: real, ...(real === label ? {} : { requested: label }), url_changed: p.url() !== before };
 }
 
 // ---- tool definitions ----
 const TOOLS = [
   { name: 'taxme_status', description: 'Check whether the BE-Login/TaxMe session is alive (ok) or an interactive SwissID/AGOV login is needed (login_required). Call this before anything else; it also refreshes the cached session.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_login', description: 'Open a visible window for the SwissID/AGOV login (waits up to 8 min).', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_account_statement', description: 'Open tax amounts (CHF) per tax year.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_account_statement', description: 'Open tax amounts (CHF) per tax year. Amounts are only reported under a year the statement itself puts them under; if none can be, the answer is status "unparsable" rather than an empty list that would read as nothing owed.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_list_returns', description: 'Tax returns with status.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
+  { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab. Only status "ok" means the return is open: the page is checked against the year that was asked for, so a login page or another case comes back as login_required / not_open / wrong_year instead.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
   { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
-  { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
+  { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, and locked when the portal has switched the field off — a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
-  { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. Text→typed (use whole francs for amounts), radio→value or label, checkbox→true/false.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
-  { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern").', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
+  { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
+  { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
   { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
@@ -619,11 +698,42 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const ep = popup || main;
       await ep.waitForLoadState('domcontentloaded'); await ep.waitForTimeout(7000);
       await ep.bringToFront().catch(() => {});
+      // What the tab that opened actually shows, before anything is promised
+      // about it. This used to report the year it had been asked for and call
+      // the return open on the strength of the click alone: when the session
+      // died between the case list and the edit view the caller was told the
+      // 2025 return was open while the tab sat on the AGOV login form, and when
+      // the portal opened a different case every later fill went into the wrong
+      // tax year under the right heading.
+      const menu = await readMenu(ep);
+      const snap = await snapshot(ep);
+      const shown = /TaxMe\s+(\d{4})/.exec(snap.breadcrumb || '');
+      if (!menu.length && !shown) {
+        // The popup is not the return, and leaving it open would make it the
+        // page every later tool works on. Take it away again.
+        if (popup) await popup.close().catch(() => {});
+        const login = looksLikeLogin(ep.url());
+        return text({
+          status: login ? 'login_required' : 'not_open',
+          error: login
+            ? `Statt Steuererklärung ${args.year} kam die Anmeldung — bitte zuerst taxme_login.`
+            : `Steuererklärung ${args.year} liess sich nicht öffnen: die Seite zeigt weder Menü noch Steuererklärung.`,
+          ...snap,
+        });
+      }
+      if (shown && String(args.year) !== shown[1]) {
+        if (popup) await popup.close().catch(() => {});
+        return text({
+          status: 'wrong_year', opened_year: Number(shown[1]),
+          error: `Das Portal hat Steuererklärung ${shown[1]} geöffnet, nicht ${args.year} — es wurde nichts geändert.`,
+          ...snap,
+        });
+      }
       // Remember which tab this is. Every later tool works on the return that
       // was actually opened, not on whichever edit tab happens to come first.
       if (editPage && editPage !== ep && !editPage.isClosed()) await editPage.close().catch(() => {});
       editPage = ep;
-      return text({ status: 'ok', year: args.year, menu: await readMenu(ep) });
+      return text({ status: 'ok', year: args.year, breadcrumb: snap.breadcrumb, menu });
     }
     if (name === 'taxme_menu') return text({ menu: await readMenu(await page()) });
     if (name === 'taxme_get_fields') {
@@ -652,13 +762,18 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       if (!Array.isArray(args.values)) return text({ error: 'values muss eine Liste von {target, value} sein' });
       // Checked before a browser is touched. An item without `value` reached
       // the fill and wrote the literal string "undefined" into the field — a
-      // malformed request quietly corrupting a draft tax return.
+      // malformed request quietly corrupting a draft tax return. Only the
+      // `undefined` spelling was caught, and every other way of saying nothing
+      // took the same road: `null` typed "null" into the field, an object typed
+      // "[object Object]", an empty array wiped it, and each came back as a
+      // successful fill. A value is a piece of text, a number or a yes/no.
+      const scalar = v => typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v));
       const badItem = args.values.findIndex(v =>
         !v || typeof v !== 'object'
         || typeof v.target !== 'string' || !v.target.trim()
-        || !Object.hasOwn(v, 'value') || v.value === undefined);
+        || !Object.hasOwn(v, 'value') || !scalar(v.value));
       if (badItem >= 0) {
-        return text({ error: `values[${badItem}] braucht ein nicht-leeres target und ein value`, got: args.values[badItem] ?? null });
+        return text({ error: `values[${badItem}] braucht ein nicht-leeres target und ein value (Text, Zahl oder true/false)`, got: args.values[badItem] ?? null });
       }
       const p = await page();
       const results = [];
