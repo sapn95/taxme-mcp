@@ -44,9 +44,10 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
-import { existsSync, readdirSync, mkdirSync, readFileSync, rmSync, chmodSync } from 'node:fs';
+import { existsSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 // Name and version come from package.json, never from a second copy here:
 // `npm version` only bumps package.json, so a hardcoded string silently
@@ -148,6 +149,7 @@ async function saveState(c = ctx) {
 }
 
 let ctx = null, headed = false;
+let shotDir = null;   // private, 0700, made on first use
 async function browser(wantHeaded = false) {
   if (ctx && (headed || !wantHeaded)) return ctx;
   if (ctx) { await ctx.close().catch(() => {}); ctx = null; }
@@ -315,7 +317,17 @@ async function snapshot(p, wantShot) {
     return m ? m[0] : (el ? el.textContent.replace(/\s+/g, ' ').trim().slice(0, 200) : '');
   });
   const out = { url: safeUrl(p.url()), breadcrumb: crumb };
-  if (wantShot) { const path = join(tmpdir(), `taxme_${Date.now()}.png`); await p.screenshot({ path }).catch(() => {}); out.screenshot = path; }
+  if (wantShot) {
+    // A screenshot of a tax return is as sensitive as the return. It used to go
+    // into the shared temp directory under a name made of a millisecond stamp:
+    // two servers a millisecond apart overwrite each other, and everyone on the
+    // machine can read the result. A private directory, made once, 0700.
+    shotDir ??= mkdtempSync(join(tmpdir(), 'taxme-shots-'));
+    const path = join(shotDir, `shot-${randomUUID()}.png`);
+    await p.screenshot({ path }).catch(() => {});
+    try { chmodSync(path, 0o600); } catch { /* the screenshot may not exist */ }
+    out.screenshot = path;
+  }
   return out;
 }
 
@@ -410,7 +422,11 @@ async function fillOne(p, target, value) {
     // A dropdown cannot be typed into; accept either the option value or its
     // visible label, because a caller reading taxme_get_fields sees both.
     await loc.selectOption({ value: String(value) }).catch(() => loc.selectOption({ label: String(value) }));
-    return { target, ok: true, selected: f.id, value: await loc.inputValue().catch(() => null) };
+    const chosen = await loc.inputValue().catch(() => null);
+    // A readback that failed is not proof the value went in. Reporting ok on it
+    // is the same mistake as reporting a submission because a button was hit.
+    if (chosen === null) return { target, ok: false, error: 'Wert liess sich nach dem Setzen nicht zurücklesen', selected: f.id };
+    return { target, ok: true, selected: f.id, value: chosen };
   }
   // Nothing here fills a password. taxme_login is the only thing that should
   // ever touch one, and it hands the keyboard to the human; a fill against a
@@ -425,6 +441,7 @@ async function fillOne(p, target, value) {
   // the field holds something else is how a wrong number ends up in a tax
   // return. So the quirk is not silently corrected, it is reported.
   const after = await loc.inputValue().catch(() => null);
+  if (after === null) return { target, ok: false, error: 'Wert liess sich nach dem Setzen nicht zurücklesen', filled: f.id };
   const out = { target, ok: true, filled: f.id, value: after };
   if (after !== null && after !== String(value)) {
     out.warning = `Feld übernahm "${after}" statt "${value}" — Beträge in ganzen Franken erfassen.`;
@@ -628,9 +645,25 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
     }
     if (name === 'taxme_submit_return') {
       const p = await page();
+      // Getting to Abschluss is a precondition, not a nicety. It used to be
+      // attempted, its failure swallowed, and the search for an "einreichen" or
+      // "freigeben" button then run against whatever page was open — which is
+      // how a confirmed call reaches an irreversible action that belongs to
+      // something else entirely.
       const el = await byText(p, 'Abschluss');
-      if (el) { await el.click().catch(() => {}); await p.waitForTimeout(6000); }
-      const snap = await snapshot(p, true);
+      if (!el) return text({ submitted: false, error: 'Menüpunkt "Abschluss" nicht gefunden — es wurde nichts geklickt', menu: await readMenu(p) });
+      try {
+        await el.click();
+      } catch (e) {
+        return text({ submitted: false, error: `"Abschluss" liess sich nicht öffnen: ${e.message.split('\n')[0].slice(0, 120)}` });
+      }
+      await p.waitForTimeout(6000);
+      // And confirm we are actually there before looking for the button.
+      const onAbschluss = /Abschluss/i.test(await p.innerText('body').catch(() => ''));
+      if (!onAbschluss) {
+        return text({ submitted: false, error: 'Nach dem Klick ist die Abschluss-Seite nicht offen — es wurde nichts eingereicht', ...(await snapshot(p, false)) });
+      }
+      const snap = await snapshot(p, args.confirm !== true);
       if (args.confirm !== true) {
         return text({ dry_run: true, message: 'Nicht eingereicht. Abschluss-Seite geöffnet. Zum tatsächlichen Einreichen taxme_submit_return mit confirm:true aufrufen.', ...snap, buttons: (await readFields(p)).filter(f => /submit|button/.test(f.type)) });
       }
