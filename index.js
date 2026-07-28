@@ -214,6 +214,18 @@ async function page() {
   return edit || pages[pages.length - 1] || await c.newPage();
 }
 
+// A tab for the reading tools, which navigate away from wherever they are.
+// They used to be handed the edit tab, so checking the session or the account
+// statement in the middle of filling a return navigated that tab off the form
+// — unsaved values and all — and every later edit tool then worked on the case
+// list. The open return is left alone.
+async function readingPage() {
+  const c = await browser(headed);
+  if (!editPage || editPage.isClosed()) return page();
+  const other = c.pages().find(p => p !== editPage && !p.isClosed());
+  return other || c.newPage();
+}
+
 async function ensure(p, url, timeout = 30000) {
   const res = await p.goto(url, { waitUntil: 'domcontentloaded', timeout });
   await p.waitForTimeout(2500);
@@ -560,7 +572,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
   const text = s => ({ content: [{ type: 'text', text: typeof s === 'string' ? s : JSON.stringify(s, null, 1) }] });
   const release = await takeTurn();
   try {
-    if (name === 'taxme_status') { const p = await page(); return text({ status: await ensure(p, CASES) }); }
+    if (name === 'taxme_status') { const p = await readingPage(); return text({ status: await ensure(p, CASES) }); }
     if (name === 'taxme_login') {
       const c = await browser(true);
       const p = c.pages()[0] || await c.newPage();
@@ -591,8 +603,8 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
             : 'BE-Login/AGOV erfolgreich, aber die Session konnte nicht gespeichert werden — nach einem Neustart ist ein neuer Login nötig.',
       });
     }
-    if (name === 'taxme_account_statement') return text(await readAccountStatement(await page()));
-    if (name === 'taxme_list_returns') return text(await listReturns(await page()));
+    if (name === 'taxme_account_statement') return text(await readAccountStatement(await readingPage()));
+    if (name === 'taxme_list_returns') return text(await listReturns(await readingPage()));
 
     if (name === 'taxme_open_return') {
       const c = await browser(headed);
