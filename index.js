@@ -252,6 +252,17 @@ async function readFields(p) {
   });
 }
 
+// Where we are, with nothing that could be replayed. An AGOV/OIDC step carries
+// the authorisation code, the state and a session id in its query string, and a
+// JSF portal is fond of ;jsessionid= in the path. A snapshot goes straight into
+// the model's context, so it gets the shape of the location and nothing more.
+function safeUrl(u) {
+  try {
+    const x = new URL(u);
+    return `${x.origin}${x.pathname.replace(/;jsessionid=[^/;?]*/i, ';jsessionid=…')}${x.search ? '?…' : ''}`;
+  } catch { return '(unparsable url)'; }
+}
+
 async function snapshot(p, wantShot) {
   const crumb = await p.evaluate(() => {
     // Only content elements: `*` also matches <html>, which has two children
@@ -262,24 +273,62 @@ async function snapshot(p, wantShot) {
     const m = document.body.innerText.match(/TaxMe \d{4} >[^\n]*/);
     return m ? m[0] : (el ? el.textContent.replace(/\s+/g, ' ').trim().slice(0, 200) : '');
   });
-  const out = { url: p.url(), breadcrumb: crumb };
+  const out = { url: safeUrl(p.url()), breadcrumb: crumb };
   if (wantShot) { const path = join(tmpdir(), `taxme_${Date.now()}.png`); await p.screenshot({ path }).catch(() => {}); out.screenshot = path; }
   return out;
 }
 
-// Set a single radio/checkbox reliably (label click, else JS click + change).
-async function setChoice(p, id) {
+// Set a single radio/checkbox to a WANTED state (label click, else JS click +
+// change). The wanted state used to be assumed: the fallback ended with
+// `checked = true` unconditionally, so unchecking a box clicked it off and then
+// forced it back on — and reported success. On a tax return that is an answer
+// inverted, which is worse than any error.
+async function setChoice(p, id, want = true) {
   const lbl = p.locator(`label[for="${id}"]`);
-  if (await lbl.count() && await lbl.first().isVisible().catch(() => false)) { await lbl.first().click(); return; }
-  await p.evaluate(i => { const r = document.getElementById(i); if (r) { r.click(); r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true })); } }, id);
+  if (await lbl.count() && await lbl.first().isVisible().catch(() => false)) {
+    await lbl.first().click();
+    // A label click toggles; if the widget did not land where it was asked to,
+    // fall through to setting it outright rather than trusting the click.
+    const now = await p.evaluate(i => document.getElementById(i)?.checked, id);
+    if (now === want) return;
+  }
+  await p.evaluate(({ i, want }) => {
+    const r = document.getElementById(i);
+    if (!r) return;
+    if (r.checked !== want) r.click();
+    r.checked = want;
+    r.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { i: id, want });
 }
 
-// Resolve a target (exact id or label/context substring) to a concrete field.
+// Resolve a target (exact id, then exact label, then a substring) to one field.
+// A substring that matches several fields used to take the first quietly, which
+// on a tax form means filling a number into whichever box happened to come
+// first in the DOM. Ambiguity is now an error that names the candidates.
 async function resolveField(p, target) {
   const fields = await readFields(p);
-  let f = fields.find(x => x.id === target);
-  if (!f) f = fields.find(x => (x.label && x.label.toLowerCase().includes(target.toLowerCase())) || (x.context && x.context.toLowerCase().includes(target.toLowerCase())));
-  return f;
+  const want = String(target).toLowerCase();
+  const exactId = fields.find(x => x.id === target);
+  if (exactId) return exactId;
+  const exactLabel = fields.filter(x => (x.label || '').toLowerCase() === want);
+  if (exactLabel.length === 1) return exactLabel[0];
+  // Only things a caller could address and would want to fill: a submit button
+  // has no id and its row context happens to contain every label on the page.
+  const usable = fields.filter(x => x.id && !/^(submit|button|reset|image|file)$/.test(x.type));
+  // A label match beats a context match — the context is the whole row, so it
+  // matches a neighbouring field just as readily as the intended one.
+  const byLabel = usable.filter(x => (x.label || '').toLowerCase().includes(want));
+  const loose = byLabel.length ? byLabel : usable.filter(x => (x.context || '').toLowerCase().includes(want));
+  if (loose.length === 1) return loose[0];
+  if (loose.length > 1) {
+    // A radio group is many inputs and one question. Matching all of its
+    // members is not ambiguity — fillOne picks the member by value below.
+    if (loose.every(x => x.type === 'radio' && x.context === loose[0].context)) return loose[0];
+    const e = new Error(`"${target}" passt auf ${loose.length} Felder — bitte eine id angeben: ${loose.map(x => x.id).slice(0, 8).join(', ')}`);
+    e.ambiguous = true;
+    throw e;
+  }
+  return undefined;
 }
 
 async function fillOne(p, target, value) {
@@ -289,14 +338,28 @@ async function fillOne(p, target, value) {
     // value can be the radio value or a label; find the matching radio in the group
     const all = await readFields(p);
     const group = all.filter(x => x.type === 'radio' && x.context === f.context);
-    const pick = group.find(x => x.value.endsWith(':' + value)) || group.find(x => x.label.toLowerCase() === String(value).toLowerCase()) || f;
-    await setChoice(p, pick.id);
+    // No fallback to the resolved field: an unknown value used to select
+    // whichever radio the lookup happened to land on and call it a success.
+    const pick = group.find(x => x.value.endsWith(':' + value))
+      || group.find(x => x.label.toLowerCase() === String(value).toLowerCase());
+    if (!pick) {
+      return {
+        target, ok: false,
+        error: `Wert "${value}" gibt es in dieser Gruppe nicht`,
+        options: group.map(x => ({ id: x.id, value: x.value.split(':').slice(1).join(':'), label: x.label })),
+      };
+    }
+    await setChoice(p, pick.id, true);
     return { target, ok: true, set: pick.id };
   }
   if (f.type === 'checkbox') {
     const want = value === true || value === 'true' || value === 'checked' || value === 1;
     const isOn = f.value.startsWith('checked');
-    if (want !== isOn) await setChoice(p, f.id);
+    if (want !== isOn) await setChoice(p, f.id, want);
+    // Read it back. Claiming a state without looking is how the inverted
+    // checkbox went unnoticed in the first place.
+    const now = await p.evaluate(i => document.getElementById(i)?.checked, f.id);
+    if (now !== want) return { target, ok: false, error: `Checkbox blieb ${now ? 'gesetzt' : 'leer'}`, checkbox: now };
     return { target, ok: true, checkbox: want };
   }
   // JSF ids contain colons ("form:tab:0:betrag"), so `#id` is not a valid CSS
@@ -384,9 +447,23 @@ server.onclose = () => { void shutdown(); };
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
+// One tool call at a time. Every one of them drives the same page: two running
+// together interleave, so one call's navigation lands while the other is
+// mid-fill, and an answer — or a value written into a tax return — belongs to
+// neither request. A client is free to pipeline requests, so this is not exotic.
+let turnQueue = Promise.resolve();
+function takeTurn() {
+  let release;
+  const held = new Promise(r => { release = r; });
+  const ourTurn = turnQueue;
+  turnQueue = turnQueue.then(() => held);
+  return ourTurn.then(() => release);
+}
+
 server.setRequestHandler(CallToolRequestSchema, async req => {
   const { name, arguments: args = {} } = req.params;
   const text = s => ({ content: [{ type: 'text', text: typeof s === 'string' ? s : JSON.stringify(s, null, 1) }] });
+  const release = await takeTurn();
   try {
     if (name === 'taxme_status') { const p = await page(); return text({ status: await ensure(p, CASES) }); }
     if (name === 'taxme_login') {
@@ -475,6 +552,9 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
     return text({ error: `unknown tool ${name}` });
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERROR: ' + (e.message || String(e)) }], isError: true };
+  } finally {
+    // Whatever happened, the next caller gets its turn.
+    release();
   }
 });
 
