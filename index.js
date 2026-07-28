@@ -322,6 +322,10 @@ async function readFields(p, limit = 60) {
 function safeUrl(u) {
   try {
     const x = new URL(u);
+    // An opaque URL has no origin: new URL('about:blank').origin is the string
+    // "null" and its pathname is "blank", so concatenating them reported the
+    // browser as sitting at "nullblank". These carry nothing to redact.
+    if (x.origin === 'null' || x.origin === '') return `${x.protocol}${x.pathname}`;
     return `${x.origin}${x.pathname.replace(/;jsessionid=[^/;?]*/i, ';jsessionid=…')}${x.search ? '?…' : ''}`;
   } catch { return '(unparsable url)'; }
 }
