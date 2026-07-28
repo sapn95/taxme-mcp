@@ -44,9 +44,9 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
-import { existsSync, readdirSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, mkdirSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 // Name and version come from package.json, never from a second copy here:
 // `npm version` only bumps package.json, so a hardcoded string silently
@@ -129,8 +129,22 @@ async function seedFromState(c) {
 // Mirror the live session (incl. session cookies + origins) to state.json so it
 // survives a server restart. Called after login and after every successful,
 // authenticated call. Best-effort — never throws into a tool result.
+// Returns what actually happened, so a caller can stop promising persistence
+// it did not get: 'saved', 'disabled' (TAXME_STATE is empty by choice), or
+// 'failed'. It still never throws into a tool result.
 async function saveState(c = ctx) {
-  try { if (STATE && c) await c.storageState({ path: STATE }); } catch { /* best-effort */ }
+  try {
+    if (!STATE) return 'disabled';
+    if (!c) return 'failed';
+    // A session cookie is password-equivalent: whoever reads this file is
+    // logged in as the taxpayer. It was written with the process umask, which
+    // on a normal machine means every local user could read it.
+    mkdirSync(dirname(STATE), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(STATE), 0o700);
+    await c.storageState({ path: STATE });
+    chmodSync(STATE, 0o600);
+    return 'saved';
+  } catch { return 'failed'; }
 }
 
 let ctx = null, headed = false;
@@ -161,16 +175,29 @@ async function browser(wantHeaded = false) {
 }
 
 // The "work page": the TaxMe edit tab if open, else the main BE-Login page.
+// The tab taxme_open_return last landed on. Picking "the first edit tab" instead
+// meant that opening a second return left every later tool on the first one:
+// values read from, and written into, a different tax year than the one the
+// caller had just opened — reported as success either way.
+let editPage = null;
+
 async function page() {
   const c = await browser(headed);
+  if (editPage && !editPage.isClosed()) return editPage;
   const pages = c.pages();
   const edit = pages.find(p => p.url().includes('/tmo') && p.url().includes('edit.jsf'));
   return edit || pages[pages.length - 1] || await c.newPage();
 }
 
 async function ensure(p, url, timeout = 30000) {
-  await p.goto(url, { waitUntil: 'domcontentloaded', timeout });
+  const res = await p.goto(url, { waitUntil: 'domcontentloaded', timeout });
   await p.waitForTimeout(2500);
+  // A 404 or a maintenance page is not a session. Only the login heuristics
+  // below used to decide, so any page that merely did not look like a login
+  // form was reported as authenticated — and the cached state refreshed on the
+  // strength of it.
+  const code = res?.status?.() ?? 200;
+  if (code >= 400) return 'unreachable';
   const u = p.url();
   if (u.includes('swissid.ch') || u.includes('agov') || u.includes('/Portal/Error') || /\/login|anmeld/i.test(u)) return 'login_required';
   const body = await p.innerText('body').catch(() => '');
@@ -182,7 +209,9 @@ async function ensure(p, url, timeout = 30000) {
 // ---- read helpers ----
 async function readAccountStatement(p) {
   const st = await ensure(p, KONTOAUSZUG);
-  if (st !== 'ok') return { status: 'login_required' };
+  // Only a session problem is a session problem: "unreachable" told the caller
+  // to log in again when the portal had answered 404.
+  if (st !== 'ok') return { status: st };
   await p.waitForTimeout(2500);
   const text = await p.innerText('body');
   const years = {};
@@ -199,7 +228,9 @@ async function readAccountStatement(p) {
 
 async function listReturns(p) {
   const st = await ensure(p, CASES);
-  if (st !== 'ok') return { status: 'login_required' };
+  // Only a session problem is a session problem: "unreachable" told the caller
+  // to log in again when the portal had answered 404.
+  if (st !== 'ok') return { status: st };
   await p.waitForTimeout(4000);
   const rows = await p.evaluate(() => {
     const out = [];
@@ -226,9 +257,12 @@ async function readMenu(p) {
   });
 }
 
-// Interactive fields on the current page.
-async function readFields(p) {
-  return p.evaluate(() => {
+// Interactive fields on the current page. `limit` keeps a tool result readable;
+// resolution passes none, because a form with more than sixty boxes is exactly
+// the kind where the field you want is the sixty-first — and it used to be
+// unreachable even when addressed by its exact id.
+async function readFields(p, limit = 60) {
+  const all = await p.evaluate(() => {
     const fields = [];
     for (const e of document.querySelectorAll('input:not([type=hidden]), select, textarea')) {
       if (!e.offsetParent && e.type !== 'radio' && e.type !== 'checkbox') continue;
@@ -248,8 +282,9 @@ async function readFields(p) {
         context: ctxTxt,
       });
     }
-    return fields.slice(0, 60);
+    return fields;
   });
+  return limit === null ? all : all.slice(0, limit);
 }
 
 // Where we are, with nothing that could be replayed. An AGOV/OIDC step carries
@@ -306,7 +341,7 @@ async function setChoice(p, id, want = true) {
 // on a tax form means filling a number into whichever box happened to come
 // first in the DOM. Ambiguity is now an error that names the candidates.
 async function resolveField(p, target) {
-  const fields = await readFields(p);
+  const fields = await readFields(p, null);
   const want = String(target).toLowerCase();
   const exactId = fields.find(x => x.id === target);
   if (exactId) return exactId;
@@ -336,7 +371,7 @@ async function fillOne(p, target, value) {
   if (!f) return { target, ok: false, error: 'Feld nicht gefunden' };
   if (f.type === 'radio') {
     // value can be the radio value or a label; find the matching radio in the group
-    const all = await readFields(p);
+    const all = await readFields(p, null);
     const group = all.filter(x => x.type === 'radio' && x.context === f.context);
     // No fallback to the resolved field: an unknown value used to select
     // whichever radio the lookup happened to land on and call it a success.
@@ -421,7 +456,7 @@ const TOOLS = [
   { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
   { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
-  { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context).', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. Text→typed (use whole francs for amounts), radio→value or label, checkbox→true/false.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern").', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
@@ -471,10 +506,30 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const p = c.pages()[0] || await c.newPage();
       await p.goto(CASES, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await p.bringToFront().catch(() => {});
-      await p.waitForURL(u => { const s = String(u); return s.includes(HOST) && !s.includes('agov') && !s.includes('Error'); }, { timeout: 480000 });
+      // Host equality, not "the string appears somewhere". A SwissID URL carries
+      // the portal address inside its redirect parameter, so a substring test
+      // was satisfied while still sitting on the login page — and the session
+      // was then cached as if authentication had completed.
+      await p.waitForURL(u => {
+        try {
+          const x = new URL(String(u));
+          return x.host === HOST && !x.pathname.includes('Error');
+        } catch { return false; }
+      }, { timeout: 480000 });
       await p.waitForTimeout(3000);
       await saveState();   // persist the fresh AGOV session to state.json
-      return text({ status: 'ok', message: 'BE-Login/AGOV erfolgreich, Session in state.json gespeichert (überlebt Server-Neustarts).' });
+      // It used to say the session was cached whatever had happened — including
+      // when caching is switched off, which is a promise the next restart breaks.
+      const cached = await saveState();
+      return text({
+        status: 'ok',
+        session_cache: cached,
+        message: cached === 'saved'
+          ? 'BE-Login/AGOV erfolgreich, Session in state.json gespeichert (überlebt Server-Neustarts).'
+          : cached === 'disabled'
+            ? 'BE-Login/AGOV erfolgreich. TAXME_STATE ist leer — die Session wird NICHT zwischengespeichert und ist nach einem Neustart weg.'
+            : 'BE-Login/AGOV erfolgreich, aber die Session konnte nicht gespeichert werden — nach einem Neustart ist ein neuer Login nötig.',
+      });
     }
     if (name === 'taxme_account_statement') return text(await readAccountStatement(await page()));
     if (name === 'taxme_list_returns') return text(await listReturns(await page()));
@@ -483,7 +538,8 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const c = await browser(headed);
       const main = c.pages().find(x => x.url().includes('caseSelection')) || c.pages()[0] || await c.newPage();
       const st = await ensure(main, CASES);
-      if (st !== 'ok') return text({ status: 'login_required', message: 'Bitte zuerst taxme_login.' });
+      if (st === 'login_required') return text({ status: 'login_required', message: 'Bitte zuerst taxme_login.' });
+      if (st !== 'ok') return text({ status: st, message: 'Das Portal hat nicht geantwortet wie erwartet.' });
       await main.waitForTimeout(3000);
       const link = await byText(main, `Steuererklärung ${args.year}`);
       if (!link) return text({ error: `Steuererklärung ${args.year} nicht gefunden`, returns: (await listReturns(main)).returns });
@@ -491,10 +547,23 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const ep = popup || main;
       await ep.waitForLoadState('domcontentloaded'); await ep.waitForTimeout(7000);
       await ep.bringToFront().catch(() => {});
-      return text({ status: 'ok', menu: await readMenu(ep) });
+      // Remember which tab this is. Every later tool works on the return that
+      // was actually opened, not on whichever edit tab happens to come first.
+      if (editPage && editPage !== ep && !editPage.isClosed()) await editPage.close().catch(() => {});
+      editPage = ep;
+      return text({ status: 'ok', year: args.year, menu: await readMenu(ep) });
     }
     if (name === 'taxme_menu') return text({ menu: await readMenu(await page()) });
-    if (name === 'taxme_get_fields') return text({ fields: await readFields(await page()) });
+    if (name === 'taxme_get_fields') {
+      // Say so when the list was cut, rather than presenting sixty of ninety
+      // fields as if that were the form.
+      const all = await readFields(await page(), null);
+      const limit = Number.isInteger(args.limit) && args.limit > 0 ? args.limit : 60;
+      return text({
+        fields: all.slice(0, limit),
+        ...(all.length > limit ? { truncated: all.length - limit, total: all.length, hint: 'pass limit to see more; taxme_fill resolves against all of them regardless' } : {}),
+      });
+    }
     if (name === 'taxme_snapshot') return text(await snapshot(await page(), args.screenshot));
 
     if (name === 'taxme_goto_section') {
@@ -525,12 +594,24 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
     if (name === 'taxme_click') { const p = await page(); const r = await clickByText(p, args.label); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, fields: await readFields(p) }); }
     if (name === 'taxme_results') {
       const p = await page();
+      // The click used to be optional and its failure swallowed, after which
+      // this returned a slice of whatever page was open — a personal-details
+      // form presented as a tax calculation.
       const el = await byText(p, 'Ergebnisse');
-      if (el) { await el.click().catch(() => {}); await p.waitForTimeout(6000); }
+      if (!el) return text({ error: 'Menüpunkt "Ergebnisse" nicht gefunden', menu: await readMenu(p) });
+      try {
+        await el.click();
+      } catch (e) {
+        return text({ error: `"Ergebnisse" liess sich nicht öffnen: ${e.message.split('\n')[0].slice(0, 120)}` });
+      }
+      await p.waitForTimeout(6000);
       const body = (await p.innerText('body')).replace(/\n{2,}/g, '\n');
       const i = body.indexOf('Ergebnisse');
+      if (i < 0) {
+        return text({ error: 'Die Seite nach dem Klick enthält keine Ergebnisse', breadcrumb: (await snapshot(p, false)).breadcrumb });
+      }
       await saveState();
-      return text({ text: body.slice(i > 0 ? i : 0, (i > 0 ? i : 0) + 1500) });
+      return text({ text: body.slice(i, i + 1500) });
     }
     if (name === 'taxme_submit_return') {
       const p = await page();

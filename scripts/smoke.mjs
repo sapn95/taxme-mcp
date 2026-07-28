@@ -7,10 +7,11 @@
 //
 // No network, no credentials, no browser — safe to run in CI.
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import readline from 'node:readline';
+import { tmpdir } from 'node:os';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -19,7 +20,21 @@ const entry = join(root, pkg.main || 'index.js');
 const fail = [];
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${what}`); if (!ok) fail.push(what); };
 
-const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
+// This gate calls every advertised tool, so it must not be able to reach the
+// real portal or the real taxpayer's session: it inherited the developer's
+// environment, profile and cached login. Everything points into a throwaway
+// directory, and the base URL at a port nothing listens on.
+const SANDBOX = mkdtempSync(join(tmpdir(), 'taxme-smoke-'));
+const child = spawn(process.execPath, [entry], {
+  stdio: ['pipe', 'pipe', 'pipe'],
+  env: {
+    ...process.env,
+    TAXME_BASE_URL: 'http://127.0.0.1:1',
+    TAXME_STATE: join(SANDBOX, 'state.json'),
+    TAXME_PROFILE: join(SANDBOX, 'profile'),
+    TAXME_BROWSER: join(SANDBOX, 'no-browser-here'),
+  },
+});
 let stderr = '';
 child.stderr.on('data', d => { stderr += d.toString(); });
 
