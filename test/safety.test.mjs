@@ -130,6 +130,24 @@ describe('secrets', () => {
     }
   });
 
+  test('a password field cannot be filled, so its value never round-trips', SLOW, async () => {
+    // get_fields masks the value it reads. The fill path read it back too — in
+    // the result, and again in the mismatch warning — and nothing masked that.
+    const fresh = await startServer({
+      TAXME_BASE_URL: portal.base,
+      TAXME_PROFILE: join(mkdtempSync(join(tmpdir(), 'taxme-pwfill-')), 'profile'),
+    }, { timeout: 240000 });
+    try {
+      await fresh.call('taxme_status', {});
+      const { raw, data } = await fresh.call('taxme_fill', { values: [{ target: 'agov:pw', value: 'geheim-1234' }] });
+      assert.equal(data.results[0].ok, false, JSON.stringify(data.results[0]));
+      assert.ok(!raw.includes('geheim-1234'), 'the value we sent came back');
+      assert.ok(!raw.includes('hunter2'), 'the value already in the box came back');
+    } finally {
+      await fresh.stop();
+    }
+  });
+
   test('nothing but JSON-RPC is written to stdout, and stderr stays quiet', SLOW, async () => {
     const err = srv.stderr();
     assert.ok(!/Error|Cannot find|ERR_|at Object\./.test(err), `noisy stderr: ${err.slice(0, 400)}`);
