@@ -87,6 +87,15 @@ const personalien = () => `
       <label for="form:pers:kirche">Kirchensteuerpflichtig</label>
     </td>
   </tr>
+  <tr>
+    <td>Nebenerwerb</td>
+    <td>
+      <!-- No label, like the JSF widgets the comment in index.js describes.
+           That is the path the fallback takes, and the fallback used to force
+           checked=true whatever it had been asked for. -->
+      <input type="checkbox" id="form:pers:nebenerwerb" value="ja" checked onchange="ev('nebenerwerb', this.checked)">
+    </td>
+  </tr>
   <tr><td>Beruf</td><td><input type="text" id="form:pers:beruf" value=""></td></tr>
   <tr><td>Gemeinde</td><td>
     <select id="form:pers:gemeinde">

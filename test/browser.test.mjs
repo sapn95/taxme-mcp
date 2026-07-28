@@ -182,6 +182,32 @@ describe('filling the form', () => {
     assert.equal(off.data.fields_after.find(f => f.id === 'form:pers:kirche').value, 'unchecked:ja');
   });
 
+  test('unticks a checkbox that has no label — the widget the fallback is for', SLOW, async () => {
+    // Kirchensteuerpflichtig has a <label>, so it is set by clicking that. The
+    // JSF widgets this server was written for do not, and that fallback ended
+    // with `checked = true` whatever it had been asked to do: unticking clicked
+    // the box off and forced it straight back on, then reported success. On a
+    // tax return that is the answer inverted, reported as done.
+    const off = await srv.call('taxme_fill', { values: [{ target: 'form:pers:nebenerwerb', value: false }] });
+    assert.equal(off.data.results[0].ok, true, JSON.stringify(off.data.results[0]));
+    assert.equal(off.data.results[0].checkbox, false);
+    assert.equal(off.data.fields_after.find(f => f.id === 'form:pers:nebenerwerb').value, 'unchecked:ja',
+      'the box must actually be empty, not merely reported as empty');
+
+    const on = await srv.call('taxme_fill', { values: [{ target: 'form:pers:nebenerwerb', value: true }] });
+    assert.equal(on.data.fields_after.find(f => f.id === 'form:pers:nebenerwerb').value, 'checked:ja');
+  });
+
+  test('an unknown radio value is refused, with the options that do exist', SLOW, async () => {
+    // It used to fall back to whichever radio the lookup landed on and return
+    // ok:true — a civil status silently set to something nobody asked for.
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'zivilstand', value: 'geschieden' }] });
+    const r = data.results[0];
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.match(r.error, /geschieden/);
+    assert.ok(r.options?.some(o => o.value === 'ledig'), `it lists what is on offer: ${JSON.stringify(r.options)}`);
+  });
+
   test('picks a dropdown option by value and by visible label', SLOW, async () => {
     const byValue = await srv.call('taxme_fill', { values: [{ target: 'Gemeinde', value: '351' }] });
     assert.equal(byValue.data.results[0].value, '351', JSON.stringify(byValue.data.results[0]));
@@ -208,7 +234,7 @@ describe('filling the form', () => {
   test('an amount that loses its centimes is reported, not silently accepted', SLOW, async () => {
     await srv.call('taxme_goto_section', { name: 'Einkünfte' });
     const { data } = await srv.call('taxme_fill', { values: [{ target: 'Bruttolohn', value: '84350.75' }] });
-    assert.equal(data.results[0].value, '84350', 'the portal drops the centimes');
+    assert.equal(data.results[0].value, '84350', `the portal drops the centimes: ${JSON.stringify(data.results[0])}`);
     assert.match(data.results[0].warning, /ganzen Franken/);
 
     const whole = await srv.call('taxme_fill', { values: [{ target: 'Bruttolohn', value: '84350' }] });
