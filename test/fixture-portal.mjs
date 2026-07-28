@@ -231,7 +231,13 @@ export function start() {
         personalien: personalien(),
         einkuenfte: einkuenfte(btn && btn.startsWith('Speichern')),
         abschluss: abschluss(state.submitted.length > 0),
-        ergebnisse: `<h2>Ergebnisse</h2><table>
+        // The prose sits BETWEEN the navigation and the results panel on
+        // purpose. "Ergebnisse" is a menu entry too, and a slice taken from
+        // the first occurrence spends its whole window on this text and never
+        // reaches the figures — which is what used to happen.
+        ergebnisse: `<p>${'Hinweis zur Berechnung. '.repeat(70)}</p>
+          <h2>Ergebnisse</h2>
+          <table>
           <tr><td>Steuerbetrag Kanton und Gemeinde</td><td>4’321.00</td></tr>
           <tr><td>Steuerbetrag direkte Bundessteuer</td><td>210.00</td></tr></table>`,
         wvz: '<h2>Wertschriftenverzeichnis</h2><p>Detail des Verzeichnisses.</p>',
