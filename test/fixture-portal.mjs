@@ -151,13 +151,18 @@ const einkuenfte = saved => `
   ${saved ? '<div class="msg">Gespeichert</div>' : ''}
 </form>`;
 
-const abschluss = (done, year) => `
+// `withButton` is what a return that is already in comes back to. A real portal
+// keeps the confirmation and takes the button away; this fixture keeps both by
+// default, because that is the shape in which a second click can be pressed at
+// all — and a page that says "wurde eingereicht" before anything is clicked is
+// exactly the page on which a refused click was read as a successful one.
+const abschluss = (done, year, withButton) => `
 <!-- No "TaxMe 2025 >" breadcrumb here, so the fallback breadcrumb is used. -->
 <div class="hint">Sie befinden sich derzeit im Abschluss der Steuererklärung ${year}.</div>
 <form method="post" action="${EDIT}?year=${year}&amp;s=abschluss">
   <input type="hidden" name="javax.faces.ViewState" id="javax.faces.ViewState" value="${VIEWSTATE}">
   <input type="button" id="form:abschluss:vorschau" value="Vorschau">
-  <input type="submit" name="b" id="form:abschluss:einreichen" value="Steuererklärung einreichen">
+  ${withButton ? '<input type="submit" name="b" id="form:abschluss:einreichen" value="Steuererklärung einreichen">' : ''}
 </form>
 ${done ? '<div class="msg">Ihre Steuererklärung wurde eingereicht.</div>' : ''}`;
 
@@ -180,6 +185,7 @@ export function start() {
     landOn: null,       // the section a reopened return comes up on when the link names none
     noCalculation: false, // Ergebnisse exists but the portal has not computed anything yet
     abschlussBlocked: false, // the portal will not open Abschluss and keeps you where you were
+    submittedKeepsButton: true, // an already-submitted return still offers the einreichen button
   };
 
   const route = (req, res, body) => {
@@ -310,7 +316,7 @@ export function start() {
       const bodyFor = {
         personalien: personalien(),
         einkuenfte: einkuenfte(btn && btn.startsWith('Speichern')),
-        abschluss: abschluss(state.submitted.length > 0, year),
+        abschluss: abschluss(state.submitted.length > 0, year, !state.submitted.length || state.submittedKeepsButton),
         // The prose sits BETWEEN the navigation and the results panel on
         // purpose. "Ergebnisse" is a menu entry too, and a slice taken from
         // the first occurrence spends its whole window on this text and never
