@@ -56,6 +56,21 @@ describe('session detection', () => {
     assert.equal(data.status, 'login_required', 'a 200 with no real user must not count as a session');
     await portal.control({ anonymous: false });
   });
+
+  test('no menu on the page is not a return that has no sections', SLOW, async () => {
+    // Nothing has been opened yet, so the browser is on the case list. The menu
+    // is on every page of the return and on no other page — three findings here
+    // rest on that — so an empty menu means we are not on the return at all:
+    // the session died, the tab was navigated away, nothing was ever opened.
+    // Handing back an empty list reads as "your return has nothing in it",
+    // which is the same empty answer read off a page that was never asked the
+    // question that the Kontoauszug had to be fixed for.
+    const { data } = await srv.call('taxme_menu');
+    assert.equal(data.menu, undefined,
+      `a page with no return on it came back as a return with no sections: ${JSON.stringify(data)}`);
+    assert.match(data.error ?? '', /kein Menü/);
+    assert.ok(data.url, 'and it says where the browser actually is');
+  });
 });
 
 describe('browser choice', () => {
@@ -140,6 +155,50 @@ describe('reading', () => {
       { fall: 'Steuererklärung 2025', status: 'In Bearbeitung' },
       { fall: 'Steuererklärung 2024', status: 'Eingereicht' },
     ]);
+  });
+
+  test('a page that is not the case list is not read as "no returns"', SLOW, async () => {
+    // The Kontoauszug was fixed for exactly this and the case list was left as
+    // it was, on the tool that gets called first and whose answer decides
+    // whether anybody looks any further. `ensure` rules out a redirect to the
+    // login and an HTTP error and nothing else, so a maintenance page under the
+    // case-list link produced no rows and came back as status ok with no
+    // returns — "there is nothing to file", concluded from a page that had
+    // never been asked, and a missed deadline is what that one costs.
+    await portal.control({ casesBroken: true });
+    const { data } = await srv.call('taxme_list_returns');
+    await portal.control({ casesBroken: false });
+    assert.notEqual(data.status, 'ok',
+      `a maintenance page was reported as having no tax returns: ${JSON.stringify(data)}`);
+    assert.match(data.error ?? '', /Fallübersicht/);
+
+    const back = await srv.call('taxme_list_returns');
+    assert.equal(back.data.status, 'ok', 'and the real list is still read');
+    assert.equal(back.data.returns.length, 2);
+  });
+
+  test('returns that cannot be tied to a year are refused, not reported as none', SLOW, async () => {
+    // The other half of the same fix, as the statement has it: a list that
+    // plainly names returns but puts the year somewhere the row parser does not
+    // look is a layout we did not understand — not an empty list.
+    await portal.control({ casesUnparsable: true });
+    const { data } = await srv.call('taxme_list_returns');
+    await portal.control({ casesUnparsable: false });
+    assert.notEqual(data.status, 'ok', `two visible returns came back as none: ${JSON.stringify(data)}`);
+    assert.match(data.error ?? '', /keine liess sich als Zeile/);
+  });
+
+  test('a year that cannot be looked up is not reported as a year that is not there', SLOW, async () => {
+    // "Steuererklärung 2025 nicht gefunden", with an empty list of what there
+    // is as the evidence, over a portal that had served no list at all. The
+    // year exists; the page does not.
+    await portal.control({ casesBroken: true });
+    const { data } = await srv.call('taxme_open_return', { year: 2025 });
+    await portal.control({ casesBroken: false });
+    assert.equal(data.returns, undefined,
+      `it listed the returns it could not read: ${JSON.stringify(data)}`);
+    assert.match(data.error ?? '', /Fallübersicht/,
+      `the wrong diagnosis of the right refusal: ${JSON.stringify(data)}`);
   });
 });
 
@@ -271,6 +330,31 @@ describe('opening a return', () => {
     const { data } = await srv.call('taxme_goto_section', { name: 'Kryptowährungen' });
     assert.match(data.error, /nicht gefunden/);
     assert.equal(data.menu.length, 7);
+  });
+
+  test('a section the portal refused to open is not handed back as that section', SLOW, async () => {
+    // TaxMe refuses to open a section while the form still has errors: the
+    // click arrives, the section you were on comes back with a banner, and this
+    // tool returned that page's fields as "the fields on that page" — the tool
+    // description and the README both say "its fields". Asking for Abschluss
+    // here came back with the Einkünfte page's Bruttolohn box, no error and
+    // nothing to suggest the navigation had not happened, and a caller then
+    // fills the number it meant to fill into another section's form.
+    // taxme_results and taxme_submit_return were each taught to check exactly
+    // this, one round apart; the tool whose whole job is opening a section
+    // still believed its own click.
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    await portal.control({ abschlussBlocked: true });
+    const blocked = await srv.call('taxme_goto_section', { name: 'Abschluss' });
+    await portal.control({ abschlussBlocked: false });
+    assert.equal(blocked.data.fields, undefined,
+      `another section's fields came back as Abschluss: ${JSON.stringify(blocked.data).slice(0, 300)}`);
+    assert.match(blocked.data.error ?? '', /nicht geöffnet/);
+    assert.match(blocked.data.breadcrumb ?? '', /Einkünfte/, 'and where the browser really is');
+
+    const back = await srv.call('taxme_goto_section', { name: 'Abschluss' });
+    assert.equal(back.data.section, 'Abschluss', `and it still opens: ${JSON.stringify(back.data).slice(0, 200)}`);
+    assert.equal(back.data.error, undefined);
   });
 });
 

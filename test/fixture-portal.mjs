@@ -203,6 +203,8 @@ export function start() {
     ergebnisseBlocked: false, // …and the same refusal for Ergebnisse
     submittedKeepsButton: true, // an already-submitted return still offers the einreichen button
     statementBroken: false, // the Kontoauszug link answers 200 with something that is not one
+    casesBroken: false,     // …and the same for the case list, which parses to no returns at all
+    casesUnparsable: false, // a case list whose rows carry the year somewhere else
   };
 
   const route = (req, res, body) => {
@@ -247,6 +249,31 @@ export function start() {
     if (u.pathname === CASES) {
       // Logged in as nobody: the portal answers 200 and looks normal.
       if (state.anonymous) return html(shell('TaxMe', '<div id="user">Angemeldet als: Benutzer</div><h1>Fallübersicht</h1>'));
+      // 200 OK, a live session, and no case list on the page — the same bad day
+      // the Kontoauszug link has in `statementBroken`. There is no table here,
+      // so the row parser produces an empty list, and an empty list of returns
+      // reads as "there is nothing to file": the one answer that must not be
+      // read off a page that was never asked the question.
+      if (state.casesBroken) {
+        return html(shell('Wartung', `
+          <div id="user">Angemeldet als: Test User</div>
+          <h1>Wartungsarbeiten</h1><p>Bitte später erneut versuchen.</p>`));
+      }
+      // The case list itself, with the year moved out of the first cell — the
+      // same shape `statementInline` gives the Kontoauszug. The returns are
+      // plainly there; the parser can tie none of them to a year, and "no
+      // returns" is the one answer that must not come back for a page that is
+      // visibly listing some.
+      if (state.casesUnparsable) {
+        return html(shell('TaxMe', `
+          <div id="user">Angemeldet als: Test User</div>
+          <h1>Fallübersicht</h1>
+          <table>
+            <tr><th>Fall</th><th>Jahr</th><th>Status</th></tr>
+            <tr><td>Steuererklärung</td><td>2025</td><td>In Bearbeitung</td></tr>
+            <tr><td>Steuererklärung</td><td>2024</td><td>Eingereicht</td></tr>
+          </table>`));
+      }
       return html(shell('TaxMe', `
         <div id="user">Angemeldet als: Test User</div>
         <h1>Fallübersicht</h1>

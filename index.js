@@ -241,9 +241,16 @@ const looksLikeLogin = u =>
 // where it was left, and the Abschluss page has no such line, so on exactly
 // that page the check was skipped and the year the caller had asked for was
 // echoed back as though the page had confirmed it. The title says it too, and
-// so does the heading of every other page. Asked only of a page that shows the
-// return's own menu — the case list names every year there is, and taking that
-// for an open return is the mistake the menu check is there to catch.
+// so does the heading of every other page.
+//
+// This said it was "asked only of a page that shows the return's own menu",
+// which is not what the caller does: it asks whenever there is a menu OR a
+// "TaxMe 2025 >" breadcrumb, so a page with a breadcrumb and no readable menu
+// gets this far. The comment is written down here because the case list names
+// every year there is, and taking that for an open return is the mistake the
+// menu check exists to catch — the case list carries no such breadcrumb, so
+// nothing is broken today, but the guard is the weaker of the two claims and
+// this is the one place anybody would look to find out which.
 async function shownYear(p, breadcrumb) {
   const crumb = /TaxMe\s+(\d{4})/.exec(breadcrumb || '');
   if (crumb) return crumb[1];
@@ -343,6 +350,33 @@ async function listReturns(p) {
     }
     return out;
   });
+  // An empty list is an answer, and it reads as "there is nothing to file" — the
+  // same shape the Kontoauszug was fixed for, on the tool that is called first
+  // and whose answer decides whether anybody looks any further. Nothing above
+  // proves the page we parsed is the case list: `ensure` rules out a redirect to
+  // the login and an HTTP error, so any 200 the portal serves under this link —
+  // a maintenance notice, an error page, a redesign — produced no rows and came
+  // back as status ok with no returns at all. A missed deadline is the cost of
+  // that one, and the taxpayer never sees the page it was read off.
+  if (!rows.length) {
+    const body = await p.innerText('body').catch(() => '');
+    // The narrower half first, because the page can settle which it is: a list
+    // that names returns none of which parsed into a row is a layout we did not
+    // understand, not an empty list.
+    if (/Steuererklärung\s+20\d{2}|Steuerperiode\s+20\d{2}/.test(body)) {
+      return {
+        status: 'unparsable',
+        error: 'Die Fallübersicht führt Steuererklärungen, aber keine liess sich als Zeile mit Jahr und Status lesen — bitte im Portal nachsehen.',
+      };
+    }
+    if (!/Fallübersicht|Steuererklärung|Steuerperiode|Veranlagung/i.test(body)) {
+      return {
+        status: 'unparsable',
+        error: 'Die Seite hinter der Fallübersicht sieht nicht nach einer Fallübersicht aus — ob es Steuererklärungen gibt, lässt sich daraus nicht sagen; bitte im Portal nachsehen.',
+        page: body.replace(/\s+/g, ' ').trim().slice(0, 200),
+      };
+    }
+  }
   return { status: 'ok', returns: rows };
 }
 
@@ -711,12 +745,12 @@ const SUBMITTED_RX = /wurde eingereicht|erfolgreich eingereicht|Einreichung erfo
 // ---- tool definitions ----
 const TOOLS = [
   { name: 'taxme_status', description: 'Check whether the BE-Login/TaxMe session is alive (ok) or an interactive SwissID/AGOV login is needed (login_required). Call this before anything else; it also refreshes the cached session.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_login', description: 'Open a visible window for the SwissID/AGOV login (waits up to 8 min).', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_login', description: 'Open a visible window for the SwissID/AGOV login (waits up to 8 min). Only status "ok" means the login went through: the portal is asked afterwards whether anybody is logged in, because the login page is served on the portal\'s own address and being there proves nothing. A login that was never completed comes back as login_required, and nothing is cached.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_account_statement', description: 'Open tax amounts (CHF) per tax year. Amounts are only reported under a year the statement itself puts them under; if none can be, the answer is status "unparsable" rather than an empty list that would read as nothing owed. A page that is not a Kontoauszug at all — a maintenance notice, an error page — is "unparsable" too: an empty list is only reported when the statement itself is on the page.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_list_returns', description: 'Tax returns with status.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_list_returns', description: 'Tax returns with status. An empty list is only reported when the case list itself is on the page: a page that is not one — a maintenance notice, an error page — and a list whose rows could not be read are both status "unparsable", because "there is nothing to file" must not be concluded from a page that was never asked the question.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab. Only status "ok" means the return is open: the page is checked against the year that was asked for, so a login page or another case comes back as login_required / not_open / wrong_year instead.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
-  { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status. A page carrying no such menu is no return: that comes back as an error naming where the browser is, not as an empty list of sections.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total. Landing there is checked: TaxMe refuses to open a section while the form still has errors, and the page it hands back instead comes back as an error naming the section you are really on — not as that section\'s fields under the name you asked for.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, name for a radio — the group, i.e. the one question, its button belongs to — and locked when the portal has switched the field off; a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards — a radio the portal hands back unanswered comes back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
@@ -771,14 +805,39 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // the portal address inside its redirect parameter, so a substring test
       // was satisfied while still sitting on the login page — and the session
       // was then cached as if authentication had completed.
+      //
+      // And the login page of this portal is served on the portal's own host, so
+      // host equality alone was satisfied by the navigation this tool had just
+      // made itself: waitForURL found its condition already true and returned
+      // before anybody had touched the keyboard. Driven against the fixture with
+      // nobody logging in, the tool answered status ok and "BE-Login/AGOV
+      // erfolgreich, Session in state.json gespeichert" over a browser sitting on
+      // the AGOV form, wrote a state file with no session in it, and the very
+      // next call came back login_required. looksLikeLogin is how `ensure` tells
+      // a login page from a portal page, and it is what was missing here.
       await p.waitForURL(u => {
         try {
           const x = new URL(String(u));
-          return x.host === HOST && !x.pathname.includes('Error');
+          return x.host === HOST && !x.pathname.includes('Error') && !looksLikeLogin(String(u));
         } catch { return false; }
       }, { timeout: 480000 });
       await p.waitForTimeout(3000);
-      await saveState();   // persist the fresh AGOV session to state.json
+      // And then ask the portal rather than the address bar. An address is not
+      // an answer to "is anybody logged in": the portal answers 200 with a page
+      // that merely says "Angemeldet als: Benutzer" when the login went nowhere,
+      // which is precisely why `ensure` looks for that — and this tool, the one
+      // whose whole job is to establish the session, was the one place that
+      // never asked. It also refreshes state.json on the way, so a session is
+      // cached only once something has confirmed there is one.
+      const live = await ensure(p, CASES);
+      if (live !== 'ok') {
+        return text({
+          status: live,
+          message: live === 'login_required'
+            ? 'Die Anmeldung ist nicht abgeschlossen — das Portal weist niemanden als angemeldet aus. Bitte taxme_login erneut aufrufen und die AGOV/SwissID-Anmeldung im Fenster zu Ende führen; es wurde nichts zwischengespeichert.'
+            : 'Nach der Anmeldung hat das Portal nicht geantwortet wie erwartet — ob eine Session besteht, lässt sich nicht sagen; bitte im Portal nachsehen.',
+        });
+      }
       // It used to say the session was cached whatever had happened — including
       // when caching is switched off, which is a promise the next restart breaks.
       const cached = await saveState();
@@ -803,7 +862,16 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       if (st !== 'ok') return text({ status: st, message: 'Das Portal hat nicht geantwortet wie erwartet.' });
       await main.waitForTimeout(3000);
       const link = await byText(main, `Steuererklärung ${args.year}`);
-      if (!link) return text({ error: `Steuererklärung ${args.year} nicht gefunden`, returns: (await listReturns(main)).returns });
+      if (!link) {
+        // Why the link is not there is two different answers, and the same page
+        // settles which: a year that does not exist is one, a case list the
+        // portal did not serve is another — and this reported the first over the
+        // second, with an empty list of what there is instead as the evidence.
+        const listed = await listReturns(main);
+        return text(listed.status === 'ok'
+          ? { error: `Steuererklärung ${args.year} nicht gefunden`, returns: listed.returns }
+          : { status: listed.status, error: `Steuererklärung ${args.year} liess sich nicht öffnen: ${listed.error || 'die Fallübersicht war nicht lesbar'}` });
+      }
       const [popup] = await Promise.all([ c.waitForEvent('page', { timeout: 15000 }).catch(() => null), link.click() ]);
       const ep = popup || main;
       await ep.waitForLoadState('domcontentloaded'); await ep.waitForTimeout(7000);
@@ -853,7 +921,24 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // because that is the one this tool has any evidence for.
       return text({ status: 'ok', year: Number(shown), breadcrumb: snap.breadcrumb, menu });
     }
-    if (name === 'taxme_menu') return text({ menu: await readMenu(await page()) });
+    if (name === 'taxme_menu') {
+      const p = await page();
+      const menu = await readMenu(p);
+      // An empty menu is not a return that has no sections. The menu is on every
+      // page of the return — three separate findings here rest on that — so no
+      // menu means we are not on the return at all: the session died, the tab
+      // was navigated away, nothing was ever opened. Handing back an empty list
+      // reads as "your return has nothing in it", which is the same empty answer
+      // read off a page that was never asked the question that the Kontoauszug
+      // and the case list were fixed for. Where the browser really is, instead.
+      if (!menu.length) {
+        return text({
+          error: 'Auf dieser Seite steht kein Menü einer Steuererklärung — es ist keine offen (bitte taxme_open_return), oder die Sitzung ist abgelaufen.',
+          ...(await snapshot(p)),
+        });
+      }
+      return text({ menu });
+    }
     if (name === 'taxme_get_fields') {
       // Say so when the list was cut, rather than presenting sixty of ninety
       // fields as if that were the form.
@@ -867,10 +952,46 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // expand a collapsed parent if needed by clicking the parent group first is not required for JSF here
       const el = await byText(p, args.name);
       if (!el) return text({ error: `Menüpunkt "${args.name}" nicht gefunden`, menu: await readMenu(p) });
+      // What the entry really says, read before the click takes the page away.
+      // The search falls back to a substring, so the name that was asked for is
+      // not necessarily the one written on the menu entry — and it is the entry
+      // that was clicked, so it is the entry the landing has to be measured
+      // against. Same reason taxme_click stopped echoing the label it was given.
+      const wanted = (await el.evaluate(e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || String(args.name);
       await el.click({ timeout: 10000 });
       await p.waitForTimeout(5000); await p.waitForLoadState('domcontentloaded').catch(() => {});
       await saveState();
-      return text({ breadcrumb: (await snapshot(p)).breadcrumb, ...(await fieldList(p)) });
+      const crumb = (await snapshot(p)).breadcrumb;
+      // And check the click landed. TaxMe refuses to open a section while the
+      // form still has errors: the click arrives, the section you were on comes
+      // back with a banner, and this handed that page's fields back as "the
+      // fields on that page" — the tool description and the README both say
+      // "its fields". Driven against the fixture, asking for Abschluss while the
+      // portal refused it returned the Einkünfte page's Bruttolohn box, with no
+      // error and nothing to suggest the navigation had not happened; a caller
+      // then fills the number it was going to fill, into another section's form.
+      // taxme_results and taxme_submit_return were each taught to check exactly
+      // this, one round apart, and the tool whose entire job is opening a
+      // section was left believing its own click. The breadcrumb names the
+      // section the portal really opened, so it is the evidence here.
+      //
+      // What is asked of it is deliberately narrow: not "the breadcrumb repeats
+      // the name I clicked" — a breadcrumb is free to shorten a menu label, and
+      // refusing a navigation that worked would be the worse failure of the two
+      // — but "the breadcrumb names a DIFFERENT entry of this very menu", which
+      // is the portal saying where it put you instead. A breadcrumb that names
+      // no section at all settles nothing, and nothing is claimed from it.
+      const here = (crumb || '').toLowerCase();
+      const want = wanted.toLowerCase();
+      const menu = await readMenu(p);
+      if (here && !here.includes(want)
+          && menu.some(m => m.section.toLowerCase() !== want && here.includes(m.section.toLowerCase()))) {
+        return text({
+          error: `Das Portal hat "${wanted}" nicht geöffnet — es zeigt weiterhin eine andere Seite; dort wurde nichts geändert`,
+          breadcrumb: crumb, menu,
+        });
+      }
+      return text({ section: wanted, breadcrumb: crumb, ...(await fieldList(p)) });
     }
     if (name === 'taxme_fill') {
       if (!Array.isArray(args.values)) return text({ error: 'values muss eine Liste von {target, value} sein' });
@@ -1044,6 +1165,13 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         return text({
           submitted: false,
           ...(already && !unreadable ? { already_submitted: true } : {}),
+          // The flag as well as the sentence. The description and the README
+          // both name page_unreadable as the key for this, and this was the one
+          // of the three branches that carried it in prose only — so a caller
+          // reading the keys saw no flag at all, which is what the plain "we
+          // never reached the page" case looks like: the wrong diagnosis of the
+          // right refusal, one layer down from the one already fixed here.
+          ...(unreadable ? { page_unreadable: true } : {}),
           // Which of the three it is, rather than the guess this used to offer:
           // the page itself answers that, and a return that is already filed is
           // not the same problem as a page we never reached — nor as a page
