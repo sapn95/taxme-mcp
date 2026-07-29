@@ -227,6 +227,25 @@ describe('opening a return', () => {
     assert.match(back.data.breadcrumb, /TaxMe 2025/, 'and it reports what the page says, not what it was asked');
   });
 
+  test('a page with no year in its breadcrumb is checked all the same', SLOW, async () => {
+    // The year check read the breadcrumb and nothing else. A half-finished
+    // return comes back up where it was left, and the Abschluss page prints no
+    // "TaxMe 2025 >" line — so on exactly that page the check found nothing to
+    // compare, skipped itself, and echoed the year that had been asked for back
+    // as though the page had confirmed it. The wrong case reported under the
+    // right heading is the one mistake this tool exists to prevent.
+    await portal.control({ landOn: 'abschluss', forceYear: '2024' });
+    const { data } = await srv.call('taxme_open_return', { year: 2025 });
+    await portal.control({ landOn: null, forceYear: null });
+    assert.equal(data.status, 'wrong_year',
+      `2024 was opened and reported as 2025: ${JSON.stringify(data).slice(0, 200)}`);
+    assert.equal(data.opened_year, 2024);
+
+    const back = await srv.call('taxme_open_return', { year: 2025 });
+    assert.equal(back.data.status, 'ok', JSON.stringify(back.data));
+    assert.equal(back.data.year, 2025);
+  });
+
   test('a section that does not exist reports the menu instead of guessing', SLOW, async () => {
     const { data } = await srv.call('taxme_goto_section', { name: 'Kryptowährungen' });
     assert.match(data.error, /nicht gefunden/);
@@ -352,6 +371,35 @@ describe('filling the form', () => {
     assert.equal(on.data.fields_after.find(f => f.id === 'form:pers:nebenerwerb').value, 'checked:ja');
   });
 
+  test('two questions in one table row are two groups, not one', SLOW, async () => {
+    // A joint return puts the same question to both spouses side by side in a
+    // single table row, so the two groups share every scrap of surrounding
+    // text. Grouping radios by that text ran them together and then picked the
+    // first member with the wanted value — answering for whichever spouse came
+    // first in the DOM, even here, where the other one is named by its exact
+    // id. On a tax return that is a deduction claimed for the wrong person.
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'form:pers:kk2:0', value: 'ja' }] });
+    assert.equal(data.results[0].ok, true, JSON.stringify(data.results[0]));
+    assert.equal(data.results[0].set, 'form:pers:kk2:0', 'it answered for the other spouse');
+    assert.equal(data.fields_after.find(f => f.id === 'form:pers:kk2:0').value, 'checked:ja');
+    assert.ok(portal.state.events.includes('kk-person2=ja'),
+      `person 2 was never answered for: ${portal.state.events}`);
+    assert.ok(!portal.state.events.includes('kk-person1=ja'),
+      `person 1 was answered for instead: ${portal.state.events}`);
+  });
+
+  test('the group a radio belongs to is reported, so the two can be told apart', SLOW, async () => {
+    // Without the name there is nothing in the listing that separates the two
+    // spouses' buttons: same row, same context, and ids a caller has no reason
+    // to read structure into.
+    const { data } = await srv.call('taxme_get_fields');
+    const p1 = data.fields.find(f => f.id === 'form:pers:kk1:0');
+    const p2 = data.fields.find(f => f.id === 'form:pers:kk2:0');
+    assert.equal(p1.name, 'kk1');
+    assert.equal(p2.name, 'kk2');
+    assert.equal(p1.context, p2.context, 'the fixture is supposed to put them in one row');
+  });
+
   test('an unknown radio value is refused, with the options that do exist', SLOW, async () => {
     // It used to fall back to whichever radio the lookup landed on and return
     // ok:true — a civil status silently set to something nobody asked for.
@@ -461,5 +509,26 @@ describe('snapshot and results', () => {
     // number badly formatted, and the assertion used to accept it.
     assert.match(data.text, /4['’]321\.00/);
     assert.ok(!/Formular in Bearbeitung/.test(data.text), 'it returned the menu instead');
+  });
+
+  test('a page that says there is no calculation is not read as one', SLOW, async () => {
+    // Requiring any digit let "Für Steuerjahr 2025 ist keine Berechnung
+    // verfügbar" through, because a year is a digit — so the check was
+    // tightened to require an amount. A date is shaped like an amount: it ends
+    // in a dot and two digits exactly as 4'321.00 does, and this portal stamps
+    // one on every page it serves. The sentence the check was written for came
+    // straight back through the new one.
+    await portal.control({ noCalculation: true });
+    const { data } = await srv.call('taxme_results');
+    await portal.control({ noCalculation: false });
+    assert.match(data.error ?? '', /keine Berechnung/,
+      `a date was read as a tax bill: ${JSON.stringify(data).slice(0, 240)}`);
+    assert.match(data.text, /keine Berechnung verfügbar/, 'and it shows what the page actually said');
+  });
+
+  test('the calculation is still read when there is one, dates and all', SLOW, async () => {
+    // The other half: stripping the dates must not take the amounts with them.
+    const { data } = await srv.call('taxme_results');
+    assert.match(data.text ?? '', /4['’]321\.00/, `a real calculation was refused: ${JSON.stringify(data).slice(0, 240)}`);
   });
 });

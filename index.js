@@ -234,6 +234,23 @@ async function readingPage() {
 const looksLikeLogin = u =>
   u.includes('swissid.ch') || u.includes('agov') || u.includes('/Portal/Error') || /\/login|anmeld/i.test(u);
 
+// Which tax year an open edit view says it is. The breadcrumb was the only
+// place this was read from, and a breadcrumb only carries the year on a page
+// that prints a "TaxMe 2025 >" line: a half-finished return comes back up
+// where it was left, and the Abschluss page has no such line, so on exactly
+// that page the check was skipped and the year the caller had asked for was
+// echoed back as though the page had confirmed it. The title says it too, and
+// so does the heading of every other page. Asked only of a page that shows the
+// return's own menu — the case list names every year there is, and taking that
+// for an open return is the mistake the menu check is there to catch.
+async function shownYear(p, breadcrumb) {
+  const crumb = /TaxMe\s+(\d{4})/.exec(breadcrumb || '');
+  if (crumb) return crumb[1];
+  const text = await p.evaluate(() => `${document.title}\n${document.body.innerText}`).catch(() => '');
+  const m = /TaxMe\s+(\d{4})/.exec(text);
+  return m ? m[1] : null;
+}
+
 async function ensure(p, url, timeout = 30000) {
   const res = await p.goto(url, { waitUntil: 'domcontentloaded', timeout });
   await p.waitForTimeout(2500);
@@ -345,6 +362,11 @@ async function readFields(p, limit = 60) {
       const masked = e.type === 'password' && e.value ? '(hidden)' : e.value;
       fields.push({
         id: e.id, tag: e.tagName.toLowerCase(), type: e.type || '',
+        // The name of a radio is the question it answers — the browser groups
+        // the buttons by it and by nothing else. Reported, because on a joint
+        // return the same question is put to both spouses in one table row and
+        // the ids alone do not say which button belongs with which.
+        ...(e.type === 'radio' && e.name ? { name: e.name } : {}),
         value: (e.type === 'radio' || e.type === 'checkbox') ? (e.checked ? 'checked' : 'unchecked') + ':' + e.value : masked,
         label: (label || '').replace(/\s+/g, ' ').trim().slice(0, 80),
         context: ctxTxt,
@@ -446,6 +468,16 @@ function wantChecked(value) {
   return null;
 }
 
+// Which radio buttons make up ONE question. The browser answers that with the
+// name attribute and with nothing else, but this used to go by "the radios
+// sharing this table row" — and a joint return puts the same question to both
+// spouses side by side in a single row. So the two groups were run together,
+// and picking the wanted option out of that combined list answered for
+// whichever spouse came first in the DOM, even when the caller had addressed
+// the other one by its exact id. The row is only the fallback for a widget
+// that carries no name at all.
+const sameRadioGroup = (a, b) => (a.name || b.name ? a.name === b.name : a.context === b.context);
+
 // Resolve a target (exact id, then exact label, then a substring) to one field.
 // A substring that matches several fields used to take the first quietly, which
 // on a tax form means filling a number into whichever box happened to come
@@ -468,7 +500,8 @@ async function resolveField(p, target) {
   if (loose.length > 1) {
     // A radio group is many inputs and one question. Matching all of its
     // members is not ambiguity — fillOne picks the member by value below.
-    if (loose.every(x => x.type === 'radio' && x.context === loose[0].context)) return loose[0];
+    // Two groups in one row are two questions, and that is ambiguity.
+    if (loose.every(x => x.type === 'radio' && sameRadioGroup(x, loose[0]))) return loose[0];
     const e = new Error(`"${target}" passt auf ${loose.length} Felder — bitte eine id angeben: ${loose.map(x => x.id).slice(0, 8).join(', ')}`);
     e.ambiguous = true;
     throw e;
@@ -494,7 +527,7 @@ async function fillOne(p, target, value) {
   if (f.type === 'radio') {
     // value can be the radio value or a label; find the matching radio in the group
     const all = await readFields(p, null);
-    const group = all.filter(x => x.type === 'radio' && x.context === f.context);
+    const group = all.filter(x => x.type === 'radio' && sameRadioGroup(x, f));
     // No fallback to the resolved field: an unknown value used to select
     // whichever radio the lookup happened to land on and call it a success.
     const pick = group.find(x => x.value.endsWith(':' + value))
@@ -607,7 +640,7 @@ const TOOLS = [
   { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab. Only status "ok" means the return is open: the page is checked against the year that was asked for, so a login page or another case comes back as login_required / not_open / wrong_year instead.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
   { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
-  { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, and locked when the portal has switched the field off — a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
+  { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, name for a radio — the group, i.e. the one question, its button belongs to — and locked when the portal has switched the field off; a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
@@ -707,33 +740,41 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // tax year under the right heading.
       const menu = await readMenu(ep);
       const snap = await snapshot(ep);
-      const shown = /TaxMe\s+(\d{4})/.exec(snap.breadcrumb || '');
-      if (!menu.length && !shown) {
-        // The popup is not the return, and leaving it open would make it the
-        // page every later tool works on. Take it away again.
+      const crumbYear = /TaxMe\s+(\d{4})/.exec(snap.breadcrumb || '')?.[1] || null;
+      // The popup is not the return, and leaving it open would make it the page
+      // every later tool works on. Take it away again.
+      const giveUp = async (status, error, extra = {}) => {
         if (popup) await popup.close().catch(() => {});
+        return text({ status, error, ...extra, ...snap });
+      };
+      if (!menu.length && !crumbYear) {
         const login = looksLikeLogin(ep.url());
-        return text({
-          status: login ? 'login_required' : 'not_open',
-          error: login
+        return giveUp(
+          login ? 'login_required' : 'not_open',
+          login
             ? `Statt Steuererklärung ${args.year} kam die Anmeldung — bitte zuerst taxme_login.`
-            : `Steuererklärung ${args.year} liess sich nicht öffnen: die Seite zeigt weder Menü noch Steuererklärung.`,
-          ...snap,
-        });
+            : `Steuererklärung ${args.year} liess sich nicht öffnen: die Seite zeigt weder Menü noch Steuererklärung.`);
       }
-      if (shown && String(args.year) !== shown[1]) {
-        if (popup) await popup.close().catch(() => {});
-        return text({
-          status: 'wrong_year', opened_year: Number(shown[1]),
-          error: `Das Portal hat Steuererklärung ${shown[1]} geöffnet, nicht ${args.year} — es wurde nichts geändert.`,
-          ...snap,
-        });
+      // What the page says it is, wherever it says it — not only in the
+      // breadcrumb, which half the pages of this portal do not print.
+      const shown = await shownYear(ep, snap.breadcrumb);
+      if (!shown) {
+        return giveUp('not_open',
+          `Die geöffnete Seite nennt kein Steuerjahr — dass dies die Steuererklärung ${args.year} ist, lässt sich nicht bestätigen.`);
+      }
+      if (String(args.year) !== shown) {
+        return giveUp('wrong_year',
+          `Das Portal hat Steuererklärung ${shown} geöffnet, nicht ${args.year} — es wurde nichts geändert.`,
+          { opened_year: Number(shown) });
       }
       // Remember which tab this is. Every later tool works on the return that
       // was actually opened, not on whichever edit tab happens to come first.
       if (editPage && editPage !== ep && !editPage.isClosed()) await editPage.close().catch(() => {});
       editPage = ep;
-      return text({ status: 'ok', year: args.year, breadcrumb: snap.breadcrumb, menu });
+      // The year the page showed, which is the same number as the one that was
+      // asked for or we would not be here — reported from the page all the same,
+      // because that is the one this tool has any evidence for.
+      return text({ status: 'ok', year: Number(shown), breadcrumb: snap.breadcrumb, menu });
     }
     if (name === 'taxme_menu') return text({ menu: await readMenu(await page()) });
     if (name === 'taxme_get_fields') {
@@ -816,7 +857,15 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // And it has to look like a calculation. Any digit used to count, so
       // "Für Steuerjahr 2025 ist keine Berechnung verfügbar" came back as a
       // successful result — a year is a digit. An amount is the evidence.
-      if (!/\d[\d'’.]*[.,]\d{2}\b/.test(slice)) {
+      //
+      // A date is not one either, and it still got through: 30.09.2025 ends in
+      // a dot and two digits exactly as 4'321.00 does, and this portal stamps
+      // a date on every page it serves. So the very sentence that check was
+      // written for came back as a calculation again, as soon as the page
+      // carried a "Stand der Daten" beneath it. The dates go before the amount
+      // is looked for.
+      const figures = slice.replace(/\b\d{1,2}\.\d{1,2}\.(?:\d{4}|\d{2})\b/g, ' ');
+      if (!/\d[\d'’.]*[.,]\d{2}\b/.test(figures)) {
         return text({ error: 'Unter "Ergebnisse" steht keine Berechnung', breadcrumb: (await snapshot(p, false)).breadcrumb, text: slice });
       }
       await saveState();

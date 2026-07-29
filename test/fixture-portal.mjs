@@ -110,6 +110,25 @@ const personalien = () => `
       <input type="checkbox" id="form:pers:kinderabzug" value="ja" disabled onchange="ev('kinderabzug', this.checked)">
     </td>
   </tr>
+  <tr>
+    <!-- A joint return asks the same question of both spouses, and the portal
+         puts the two answers side by side in ONE table row. So two separate
+         radio groups — two different name attributes — share a row, and with
+         it every scrap of surrounding text. -->
+    <td>Krankheitskosten</td>
+    <td>
+      Person 1
+      <input class="jsf-radio" type="radio" name="kk1" id="form:pers:kk1:0" value="ja" onchange="ev('kk-person1', this.value)">
+      <label for="form:pers:kk1:0">beantragt</label>
+      <input class="jsf-radio" type="radio" name="kk1" id="form:pers:kk1:1" value="nein" onchange="ev('kk-person1', this.value)">
+      <label for="form:pers:kk1:1">verzichtet</label>
+      Person 2
+      <input class="jsf-radio" type="radio" name="kk2" id="form:pers:kk2:0" value="ja" onchange="ev('kk-person2', this.value)">
+      <label for="form:pers:kk2:0">beantragt</label>
+      <input class="jsf-radio" type="radio" name="kk2" id="form:pers:kk2:1" value="nein" onchange="ev('kk-person2', this.value)">
+      <label for="form:pers:kk2:1">verzichtet</label>
+    </td>
+  </tr>
   <tr><td>Beruf</td><td><input type="text" id="form:pers:beruf" value=""></td></tr>
   <tr><td>Gemeinde</td><td>
     <select id="form:pers:gemeinde">
@@ -132,10 +151,10 @@ const einkuenfte = saved => `
   ${saved ? '<div class="msg">Gespeichert</div>' : ''}
 </form>`;
 
-const abschluss = done => `
+const abschluss = (done, year) => `
 <!-- No "TaxMe 2025 >" breadcrumb here, so the fallback breadcrumb is used. -->
-<div class="hint">Sie befinden sich derzeit im Abschluss der Steuererklärung 2025.</div>
-<form method="post" action="${EDIT}?year=2025&amp;s=abschluss">
+<div class="hint">Sie befinden sich derzeit im Abschluss der Steuererklärung ${year}.</div>
+<form method="post" action="${EDIT}?year=${year}&amp;s=abschluss">
   <input type="hidden" name="javax.faces.ViewState" id="javax.faces.ViewState" value="${VIEWSTATE}">
   <input type="button" id="form:abschluss:vorschau" value="Vorschau">
   <input type="submit" name="b" id="form:abschluss:einreichen" value="Steuererklärung einreichen">
@@ -158,6 +177,8 @@ export function start() {
     editBroken: false,  // the edit view answers 200 with something that is not a return
     forceYear: null,    // the portal opens a different case than the link asked for
     statementInline: false, // a statement whose years are inside the rows, not above them
+    landOn: null,       // the section a reopened return comes up on when the link names none
+    noCalculation: false, // Ergebnisse exists but the portal has not computed anything yet
   };
 
   const route = (req, res, body) => {
@@ -264,7 +285,10 @@ export function start() {
       // And the portal opening a case of its own choosing rather than the one
       // the link named.
       const year = state.forceYear || u.searchParams.get('year') || '2025';
-      const s = u.searchParams.get('s') || '';
+      // A half-finished return comes back up where it was left, so the link
+      // from the case list — which names no section — can land on any page of
+      // the form, including the one that carries no "TaxMe 2025 >" breadcrumb.
+      const s = u.searchParams.get('s') || state.landOn || '';
       const btn = form.get('b');
       if (btn) state.clicks.push(btn);
       // rejectSubmit models the portal refusing: the click arrives, nothing is
@@ -276,12 +300,21 @@ export function start() {
       const bodyFor = {
         personalien: personalien(),
         einkuenfte: einkuenfte(btn && btn.startsWith('Speichern')),
-        abschluss: abschluss(state.submitted.length > 0),
+        abschluss: abschluss(state.submitted.length > 0, year),
         // The prose sits BETWEEN the navigation and the results panel on
         // purpose. "Ergebnisse" is a menu entry too, and a slice taken from
         // the first occurrence spends its whole window on this text and never
         // reaches the figures — which is what used to happen.
-        ergebnisse: `<p>${'Hinweis zur Berechnung. '.repeat(70)}</p>
+        //
+        // noCalculation is the same page before the portal has computed
+        // anything: it says so in words, and — like every page of this portal
+        // — it is stamped with a date. There is no amount on it.
+        ergebnisse: state.noCalculation
+          ? `<p>${'Hinweis zur Berechnung. '.repeat(70)}</p>
+          <h2>Ergebnisse</h2>
+          <p>Für Steuerjahr ${year} ist keine Berechnung verfügbar.</p>
+          <p>Stand der Daten: 30.09.${Number(year) + 1}</p>`
+          : `<p>${'Hinweis zur Berechnung. '.repeat(70)}</p>
           <h2>Ergebnisse</h2>
           <table>
           <tr><td>Steuerbetrag Kanton und Gemeinde</td><td>4’321.00</td></tr>
