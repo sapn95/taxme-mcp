@@ -410,6 +410,24 @@ describe('filling the form', () => {
     assert.ok(r.options?.some(o => o.value === 'ledig'), `it lists what is on offer: ${JSON.stringify(r.options)}`);
   });
 
+  test('an empty value does not quietly pick the first option of a group', SLOW, async () => {
+    // The JSF widgets on this portal carry no <label for> — that is the whole
+    // reason the fill has a JavaScript fallback at all — so every one of their
+    // radios is reported with label:"". The option was matched against that
+    // label, so an empty value matched the first button of the group and set
+    // it: Konfession answered as evangelisch-reformiert, the change event
+    // fired at the portal, and ok:true reported back. On a tax return a
+    // confession decides a church tax, and nobody had asked for one.
+    const before = portal.state.events.length;
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'Konfession', value: '' }] });
+    assert.equal(data.results[0].ok, false, `it answered for the taxpayer: ${JSON.stringify(data.results[0])}`);
+    assert.ok(data.results[0].options?.some(o => o.value === 'ref'),
+      `and it says what is on offer: ${JSON.stringify(data.results[0])}`);
+    assert.deepEqual(portal.state.events.slice(before), [], 'the portal was told about a choice nobody made');
+    assert.equal(data.fields_after.find(f => f.id === 'form:pers:konf:1').value, 'checked:kath',
+      'and it left the group as it found it');
+  });
+
   test('picks a dropdown option by value and by visible label', SLOW, async () => {
     const byValue = await srv.call('taxme_fill', { values: [{ target: 'Gemeinde', value: '351' }] });
     assert.equal(byValue.data.results[0].value, '351', JSON.stringify(byValue.data.results[0]));
@@ -472,6 +490,9 @@ describe('clicking', () => {
     assert.equal(data.clicked, 'Speichern und schliessen', `it reported a click it did not make: ${JSON.stringify(data.clicked)}`);
     assert.equal(data.requested, 'Speichern', 'and says what had been asked for');
     await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    // Asserted after the way back, so a failure here does not strand the rest
+    // of the file on a page it does not expect.
+    assert.ok(data.truncated > 0, `this page has more boxes than fit, and the reply has to say so: ${JSON.stringify(Object.keys(data))}`);
   });
 
   test('follows a link that changes the url, and says that it did', SLOW, async () => {
@@ -530,5 +551,29 @@ describe('snapshot and results', () => {
     // The other half: stripping the dates must not take the amounts with them.
     const { data } = await srv.call('taxme_results');
     assert.match(data.text ?? '', /4['’]321\.00/, `a real calculation was refused: ${JSON.stringify(data).slice(0, 240)}`);
+  });
+});
+
+describe('a form with more boxes than fit in a reply', () => {
+  test('the tools that hand the page back say when they cut it, not only get_fields', SLOW, async () => {
+    // A Wertschriftenverzeichnis has more than sixty positions, which is the
+    // case readFields' own comment is written for. taxme_get_fields was taught
+    // to report the cut; goto_section, fill and click went on slicing in
+    // silence — and those are the ones a caller reads to check what just
+    // happened. Sixty of seventy-one came back looking like the whole form,
+    // and fields_after did not hold the box the fill had written to, so a fill
+    // that landed read exactly like one that never did.
+    const section = await srv.call('taxme_goto_section', { name: 'Wertschriftenverzeichnis' });
+    assert.ok(section.data.total > 60,
+      `the fixture is supposed to serve a long form here: ${JSON.stringify(section.data).slice(0, 200)}`);
+    assert.equal(section.data.truncated, section.data.total - section.data.fields.length);
+
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'form:wvz:64:betrag', value: '1200' }] });
+    assert.equal(data.results[0].filled, 'form:wvz:64:betrag', JSON.stringify(data.results[0]));
+    assert.ok(!data.fields_after.some(f => f.id === 'form:wvz:64:betrag'),
+      'the box has to sit past the cut, or this proves nothing');
+    assert.ok(data.truncated > 0,
+      `sixty fields came back as the whole form: ${JSON.stringify(Object.keys(data))}`);
+    assert.equal(data.total, section.data.total);
   });
 });

@@ -179,6 +179,7 @@ export function start() {
     statementInline: false, // a statement whose years are inside the rows, not above them
     landOn: null,       // the section a reopened return comes up on when the link names none
     noCalculation: false, // Ergebnisse exists but the portal has not computed anything yet
+    abschlussBlocked: false, // the portal will not open Abschluss and keeps you where you were
   };
 
   const route = (req, res, body) => {
@@ -288,7 +289,16 @@ export function start() {
       // A half-finished return comes back up where it was left, so the link
       // from the case list — which names no section — can land on any page of
       // the form, including the one that carries no "TaxMe 2025 >" breadcrumb.
-      const s = u.searchParams.get('s') || state.landOn || '';
+      let s = u.searchParams.get('s') || state.landOn || '';
+      // TaxMe will not let you into Abschluss while the form still has errors.
+      // The click arrives, and the section you were on comes back with a
+      // banner — so nothing on the page says "Abschluss" except the menu entry
+      // that every page of the return carries anyway.
+      let blocked = '';
+      if (s === 'abschluss' && state.abschlussBlocked) {
+        s = 'einkuenfte';
+        blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
+      }
       const btn = form.get('b');
       if (btn) state.clicks.push(btn);
       // rejectSubmit models the portal refusing: the click arrives, nothing is
@@ -322,8 +332,14 @@ export function start() {
         // The only save button on this page is the long one. Asking for
         // "Speichern" here can only be answered by "Speichern und schliessen",
         // which is a different thing to do to a form — so the reply has to name
-        // the button that was really pressed.
+        // the button that was really pressed. And seventy positions, because a
+        // securities list really is that long: a form with more than sixty
+        // boxes is the case readFields' own comment is written for, a reply
+        // that shows sixty of them has to say so, and the box the test writes
+        // to sits past the cut on purpose.
         wvz: `<h2>Wertschriftenverzeichnis</h2><p>Detail des Verzeichnisses.</p>
+          <table class="fields">${Array.from({ length: 70 }, (_, i) =>
+    `<tr><td>Wertschrift ${i + 1}</td><td><input type="text" id="form:wvz:${i}:betrag" value=""></td></tr>`).join('')}</table>
           <form method="post" action="${EDIT}?year=2025&amp;s=wvz">
             <input type="submit" name="b" value="Speichern und schliessen">
           </form>`,
@@ -333,7 +349,7 @@ export function start() {
 
       // The Abschluss page deliberately has no "TaxMe ... >" breadcrumb.
       const crumb = s === 'abschluss' ? '' : `<div id="crumb">TaxMe ${year} > ${SECTIONS.find(x => x[0] === s)?.[1] || 'Übersicht'}</div>`;
-      return html(shell(`TaxMe ${year}`, `${crumb}${menu(year)}<div id="content">${bodyFor}</div>`));
+      return html(shell(`TaxMe ${year}`, `${crumb}${menu(year)}<div id="content">${blocked}${bodyFor}</div>`));
     }
 
     return html(shell('Fehler', '<h1>Seite nicht gefunden</h1>'), 404);
