@@ -71,6 +71,30 @@ describe('session detection', () => {
     assert.match(data.error ?? '', /kein Menü/);
     assert.ok(data.url, 'and it says where the browser actually is');
   });
+
+  test('and neither is a section nobody can find on a page that has no menu', SLOW, async () => {
+    // The tool beside taxme_menu, reading the same menu off the same page.
+    // With nothing open, asking for a section answered "Menüpunkt … nicht
+    // gefunden" over an empty list of sections — which reads as this return
+    // not having one, while the browser is on the case list or, when a session
+    // dies, on the AGOV login form. taxme_menu was taught the difference and
+    // this was not.
+    const { data } = await srv.call('taxme_goto_section', { name: 'Personalien' });
+    assert.match(data.error ?? '', /kein Menü/,
+      `a page with no return on it was answered as a return without that section: ${JSON.stringify(data)}`);
+    assert.ok(data.url, 'and it says where the browser actually is');
+
+    // The other two that look a section up in this menu, and gave the same
+    // wrong diagnosis of the same page. Neither of them clicks anything here:
+    // the entry is not on the page, so both return before they act.
+    const results = await srv.call('taxme_results');
+    assert.match(results.data.error ?? '', /kein Menü/, JSON.stringify(results.data));
+    const submit = await srv.call('taxme_submit_return');
+    assert.match(submit.data.error ?? '', /kein Menü/, JSON.stringify(submit.data));
+    assert.equal(submit.data.submitted, false, 'and it still says plainly that nothing was submitted');
+    assert.deepEqual(portal.state.submitted, [], 'nothing may reach the portal from here');
+    assert.deepEqual(portal.state.clicks, [], 'and nothing may be clicked');
+  });
 });
 
 describe('browser choice', () => {
@@ -236,6 +260,56 @@ describe('opening a return', () => {
     assert.equal(data.breadcrumb, 'TaxMe 2025 > Wertschriftenverzeichnis');
   });
 
+  test('a refusal that leaves you on the longer page is still a refusal', SLOW, async () => {
+    // The landing check asked whether the breadcrumb CONTAINED the name that
+    // had been clicked, and this menu is full of names that nest — the pair
+    // `byText` needed an exact match for in the first place. So the portal
+    // refusing to open Wertschriften and leaving the browser on
+    // Wertschriftenverzeichnis answered "yes, the breadcrumb says
+    // Wertschriften", and that page's seventy boxes came back as the fields of
+    // a section that was never opened, under the name that was asked for: the
+    // very failure the check exists to stop, on the one menu pair this fixture
+    // was built around. We are on Wertschriftenverzeichnis from the test above.
+    await portal.control({ wertschriftenBlocked: true });
+    const blocked = await srv.call('taxme_goto_section', { name: 'Wertschriften' });
+    await portal.control({ wertschriftenBlocked: false });
+    // The way back first, so a failure here fails alone instead of stranding
+    // the rest of the file on a page it does not expect.
+    const back = await srv.call('taxme_goto_section', { name: 'Wertschriften' });
+    assert.equal(blocked.data.fields, undefined,
+      `the longer page's fields came back as Wertschriften: ${JSON.stringify(blocked.data).slice(0, 300)}`);
+    assert.match(blocked.data.error ?? '', /nicht geöffnet/);
+    assert.equal(blocked.data.breadcrumb, 'TaxMe 2025 > Wertschriftenverzeichnis',
+      'and where the browser really is');
+    assert.equal(back.data.section, 'Wertschriften', `and it still opens: ${JSON.stringify(back.data).slice(0, 200)}`);
+    assert.equal(back.data.error, undefined);
+  });
+
+  test('a breadcrumb that shortens the label, or names no section, is not a refusal', SLOW, async () => {
+    // The other half, and the one the previous version's commit message
+    // claimed outright: "a portal that shortens a label in its breadcrumb
+    // cannot turn a working navigation into a refusal". It could, because the
+    // short forms of this portal are menu entries in their own right — the
+    // breadcrumb of Wertschriftenverzeichnis reading "Wertschriften" named a
+    // different entry of the very same menu, and the check refused a
+    // navigation that had worked. Refusing what worked is the worse failure of
+    // the two, by that message's own reckoning.
+    await portal.control({ crumbLabel: 'Wertschriften' });
+    const short = await srv.call('taxme_goto_section', { name: 'Wertschriftenverzeichnis' });
+    // And a breadcrumb naming no entry of this menu settles nothing at all, so
+    // nothing is claimed from it either way.
+    await portal.control({ crumbLabel: 'Übersicht' });
+    const none = await srv.call('taxme_goto_section', { name: 'Wertschriftenverzeichnis' });
+    // Both flips undone before a word is asserted, or a failure here leaves
+    // every later test reading a breadcrumb the portal does not really write.
+    await portal.control({ crumbLabel: null });
+    assert.equal(short.data.error, undefined,
+      `a working navigation was refused over a shortened breadcrumb: ${JSON.stringify(short.data).slice(0, 300)}`);
+    assert.ok(short.data.total > 60, 'and it is the long page, so the navigation really did happen');
+    assert.equal(none.data.error, undefined, JSON.stringify(none.data).slice(0, 300));
+    assert.ok(none.data.total > 60);
+  });
+
   test('opening a second return moves the tools onto it, not back to the first', SLOW, async () => {
     // The tools used to work on "the first edit tab there is" rather than on the
     // one that was opened. Against this fixture that happens to pick the right
@@ -355,6 +429,32 @@ describe('opening a return', () => {
     const back = await srv.call('taxme_goto_section', { name: 'Abschluss' });
     assert.equal(back.data.section, 'Abschluss', `and it still opens: ${JSON.stringify(back.data).slice(0, 200)}`);
     assert.equal(back.data.error, undefined);
+  });
+
+  test('a click that lands on the login form is not the section that was asked for', SLOW, async () => {
+    // The session that was good enough to open the return can be gone by the
+    // time the next menu entry is clicked: the link goes to the edit view, the
+    // portal bounces it to AGOV, and a login form has no breadcrumb. The
+    // landing check read the breadcrumb and nothing else, and an empty
+    // breadcrumb "settles nothing" — so it stood down, and the AGOV form's own
+    // user name and password boxes came back as `section: "Personalien"` with
+    // no error at all. The menu settles it completely and was right there,
+    // already read: taxme_menu refuses this very page.
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    await portal.control({ editLoggedOut: true });
+    const gone = await srv.call('taxme_goto_section', { name: 'Personalien' });
+    const asMenu = await srv.call('taxme_menu');
+    await portal.control({ editLoggedOut: false });
+    // Back onto the return before asserting: this test leaves the edit tab on
+    // the login form, and a failure here would otherwise hand every later test
+    // in the file a page with no tax return on it.
+    const back = await srv.call('taxme_open_return', { year: 2025 });
+    assert.equal(gone.data.fields, undefined,
+      `the login form came back as a section of the return: ${JSON.stringify(gone.data).slice(0, 300)}`);
+    assert.match(gone.data.error ?? '', /kein Menü/);
+    assert.match(asMenu.data.error ?? '', /kein Menü/,
+      'the two tools have to say the same thing about the same page');
+    assert.equal(back.data.status, 'ok', JSON.stringify(back.data));
   });
 });
 

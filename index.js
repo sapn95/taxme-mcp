@@ -504,6 +504,19 @@ async function snapshot(p, wantShot) {
   return out;
 }
 
+// The answer every tool owes when the page it is standing on carries no menu.
+// The menu is on every page of a return and on no other page — several
+// findings here rest on that — so no menu means we are not on the return at
+// all: the session died, the tab was navigated away, nothing was ever opened.
+// taxme_menu was taught to say so and the four other places that read a menu
+// were not, each of them then dressing the same page up as a smaller problem
+// than it is: "this return has no such section", or worse, that section's
+// fields. One sentence, in one place, because they are all one situation.
+const noReturnHere = async (p, extra = '') => ({
+  error: `Auf dieser Seite steht kein Menü einer Steuererklärung — es ist keine offen (bitte taxme_open_return), oder die Sitzung ist abgelaufen${extra}.`,
+  ...(await snapshot(p)),
+});
+
 // Set a single radio/checkbox to a WANTED state (label click, else JS click +
 // change). The wanted state used to be assumed: the fallback ended with
 // `checked = true` unconditionally, so unchecking a box clicked it off and then
@@ -750,7 +763,7 @@ const TOOLS = [
   { name: 'taxme_list_returns', description: 'Tax returns with status. An empty list is only reported when the case list itself is on the page: a page that is not one — a maintenance notice, an error page — and a list whose rows could not be read are both status "unparsable", because "there is nothing to file" must not be concluded from a page that was never asked the question.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab. Only status "ok" means the return is open: the page is checked against the year that was asked for, so a login page or another case comes back as login_required / not_open / wrong_year instead.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
   { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status. A page carrying no such menu is no return: that comes back as an error naming where the browser is, not as an empty list of sections.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total. Landing there is checked: TaxMe refuses to open a section while the form still has errors, and the page it hands back instead comes back as an error naming the section you are really on — not as that section\'s fields under the name you asked for.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total. Landing there is checked: TaxMe refuses to open a section while the form still has errors, and the page it hands back instead comes back as an error naming the section you are really on — not as that section\'s fields under the name you asked for. Which section that is is decided by the menu entry the breadcrumb names, not by the name appearing somewhere in it, because these names nest ("Wertschriften" inside "Wertschriftenverzeichnis"). A page carrying no menu is no return at all — an expired session lands on the login form — and comes back as an error saying so.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, name for a radio — the group, i.e. the one question, its button belongs to — and locked when the portal has switched the field off; a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards — a radio the portal hands back unanswered comes back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
@@ -931,12 +944,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // reads as "your return has nothing in it", which is the same empty answer
       // read off a page that was never asked the question that the Kontoauszug
       // and the case list were fixed for. Where the browser really is, instead.
-      if (!menu.length) {
-        return text({
-          error: 'Auf dieser Seite steht kein Menü einer Steuererklärung — es ist keine offen (bitte taxme_open_return), oder die Sitzung ist abgelaufen.',
-          ...(await snapshot(p)),
-        });
-      }
+      if (!menu.length) return text(await noReturnHere(p));
       return text({ menu });
     }
     if (name === 'taxme_get_fields') {
@@ -951,7 +959,17 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const p = await page();
       // expand a collapsed parent if needed by clicking the parent group first is not required for JSF here
       const el = await byText(p, args.name);
-      if (!el) return text({ error: `Menüpunkt "${args.name}" nicht gefunden`, menu: await readMenu(p) });
+      if (!el) {
+        // Not finding the entry has two causes, and the menu settles which:
+        // this return has no such section, or we are not on a return. With
+        // nothing open this answered the first — "Menüpunkt … nicht gefunden"
+        // over an empty list of sections — about the case list, or about the
+        // AGOV login form. taxme_menu was taught the difference a round ago
+        // and the tool beside it, reading the same menu off the same page, was
+        // not.
+        const menu = await readMenu(p);
+        return text(menu.length ? { error: `Menüpunkt "${args.name}" nicht gefunden`, menu } : await noReturnHere(p));
+      }
       // What the entry really says, read before the click takes the page away.
       // The search falls back to a substring, so the name that was asked for is
       // not necessarily the one written on the menu entry — and it is the entry
@@ -961,7 +979,9 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       await el.click({ timeout: 10000 });
       await p.waitForTimeout(5000); await p.waitForLoadState('domcontentloaded').catch(() => {});
       await saveState();
-      const crumb = (await snapshot(p)).breadcrumb;
+      const snap = await snapshot(p);
+      const crumb = snap.breadcrumb;
+      const menu = await readMenu(p);
       // And check the click landed. TaxMe refuses to open a section while the
       // form still has errors: the click arrives, the section you were on comes
       // back with a banner, and this handed that page's fields back as "the
@@ -972,20 +992,54 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // then fills the number it was going to fill, into another section's form.
       // taxme_results and taxme_submit_return were each taught to check exactly
       // this, one round apart, and the tool whose entire job is opening a
-      // section was left believing its own click. The breadcrumb names the
-      // section the portal really opened, so it is the evidence here.
+      // section was left believing its own click. Two things say where the
+      // portal really put us — the menu and the breadcrumb — and the check that
+      // was written read only the second, and read it as a substring.
       //
-      // What is asked of it is deliberately narrow: not "the breadcrumb repeats
-      // the name I clicked" — a breadcrumb is free to shorten a menu label, and
-      // refusing a navigation that worked would be the worse failure of the two
-      // — but "the breadcrumb names a DIFFERENT entry of this very menu", which
-      // is the portal saying where it put you instead. A breadcrumb that names
-      // no section at all settles nothing, and nothing is claimed from it.
+      // The menu answers the wider question first, and it was not asked at all:
+      // a click can land somewhere that is not this return, and the plainest
+      // way there is the session dying between opening the return and clicking
+      // the next entry — the menu link goes to the edit view, the portal bounces
+      // it to AGOV, and the breadcrumb of a login form is empty. An empty
+      // breadcrumb was read as "settles nothing", so the check stood down and
+      // the AGOV form's own boxes came back as `section: "Personalien"`, user
+      // name and password field and all. taxme_menu refuses that very page.
+      if (!menu.length) {
+        return text(await noReturnHere(
+          p, ` — "${wanted}" wurde also nicht geöffnet, und dort wurde nichts geändert`));
+      }
+      // Then which entry of the menu the breadcrumb names. Asking whether the
+      // breadcrumb CONTAINS the name we clicked is the substring test this file
+      // has been bitten by twice already, and the menu of this portal is full
+      // of names that nest: "Wertschriften" is a prefix of
+      // "Wertschriftenverzeichnis" — the pair `byText` needed `rxExact` for.
+      // So a refused click that left the browser on Wertschriftenverzeichnis
+      // answered "yes, the breadcrumb says Wertschriften", and that page's
+      // seventy boxes came back under the name of the section that was never
+      // opened: the exact failure this check was written to stop, surviving on
+      // the one menu pair the fixture exists to model.
+      //
+      // The evidence is which entry the breadcrumb names, so that is what is
+      // read: the LONGEST menu entry the breadcrumb contains, since a longer
+      // name that fits also contains every shorter one nested inside it.
       const here = (crumb || '').toLowerCase();
       const want = wanted.toLowerCase();
-      const menu = await readMenu(p);
-      if (here && !here.includes(want)
-          && menu.some(m => m.section.toLowerCase() !== want && here.includes(m.section.toLowerCase()))) {
+      let landed = '';
+      for (const m of menu) {
+        const s = m.section.toLowerCase();
+        if (s && here.includes(s) && s.length > landed.length) landed = s;
+      }
+      // A breadcrumb that names no entry of this menu settles nothing, and
+      // nothing is claimed from it. Nor does a breadcrumb that names a SHORTER
+      // entry than the one we clicked: a breadcrumb is free to shorten a label
+      // and this portal's short forms are menu entries in their own right, so
+      // that reading is ambiguous — and the previous version of this check,
+      // whose commit message promised that a shortened label "cannot turn a
+      // working navigation into a refusal", refused exactly that case. Refusing
+      // a navigation that worked is the worse failure of the two. A breadcrumb
+      // naming a LONGER entry is not ambiguous: no breadcrumb lengthens a
+      // label, so that is a different page, and it is refused.
+      if (landed && landed !== want && !want.startsWith(landed)) {
         return text({
           error: `Das Portal hat "${wanted}" nicht geöffnet — es zeigt weiterhin eine andere Seite; dort wurde nichts geändert`,
           breadcrumb: crumb, menu,
@@ -1030,7 +1084,13 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // this returned a slice of whatever page was open — a personal-details
       // form presented as a tax calculation.
       const el = await byText(p, 'Ergebnisse');
-      if (!el) return text({ error: 'Menüpunkt "Ergebnisse" nicht gefunden', menu: await readMenu(p) });
+      // The same two causes as in taxme_goto_section, and the same menu settles
+      // which: a return with no Ergebnisse entry is one thing, a page that is
+      // no return at all is another, and this reported the first over both.
+      if (!el) {
+        const menu = await readMenu(p);
+        return text(menu.length ? { error: 'Menüpunkt "Ergebnisse" nicht gefunden', menu } : await noReturnHere(p));
+      }
       try {
         await el.click();
       } catch (e) {
@@ -1108,7 +1168,16 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // how a confirmed call reaches an irreversible action that belongs to
       // something else entirely.
       const el = await byText(p, 'Abschluss');
-      if (!el) return text({ submitted: false, error: 'Menüpunkt "Abschluss" nicht gefunden — es wurde nichts geklickt', menu: await readMenu(p) });
+      // And here too. Nothing is pressed either way, so this is a diagnosis
+      // rather than a danger — but "this return has no Abschluss" is a strange
+      // enough thing to be told that a caller may go looking for the entry
+      // under another name instead of logging in again.
+      if (!el) {
+        const menu = await readMenu(p);
+        return text(menu.length
+          ? { submitted: false, error: 'Menüpunkt "Abschluss" nicht gefunden — es wurde nichts geklickt', menu }
+          : { submitted: false, ...(await noReturnHere(p, ' — es wurde nichts geklickt')) });
+      }
       try {
         await el.click();
       } catch (e) {

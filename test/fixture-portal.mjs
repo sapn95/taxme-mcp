@@ -205,6 +205,13 @@ export function start() {
     statementBroken: false, // the Kontoauszug link answers 200 with something that is not one
     casesBroken: false,     // …and the same for the case list, which parses to no returns at all
     casesUnparsable: false, // a case list whose rows carry the year somewhere else
+    // The same refusal again, for the one menu pair whose names nest: the
+    // portal will not open Wertschriften and leaves you on
+    // Wertschriftenverzeichnis, whose name CONTAINS the one that was asked for.
+    wertschriftenBlocked: false,
+    // What the portal writes in its breadcrumb when that is not the label on
+    // the menu entry — a shortened form, or a word that is no menu entry at all.
+    crumbLabel: null,
   };
 
   const route = (req, res, body) => {
@@ -367,6 +374,14 @@ export function start() {
         s = 'einkuenfte';
         blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
       }
+      // And the same refusal where the page you are left on is named after the
+      // section you asked for plus a bit more. A check that asks whether the
+      // breadcrumb contains the requested name says yes here, which is how the
+      // wrong page comes back under the right name.
+      if (s === 'wertschriften' && state.wertschriftenBlocked) {
+        s = 'wvz';
+        blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
+      }
       const btn = form.get('b');
       if (btn) state.clicks.push(btn);
       // rejectSubmit models the portal refusing: the click arrives, nothing is
@@ -421,7 +436,7 @@ export function start() {
       }[s] || '<p>Bitte wählen Sie links einen Abschnitt.</p>';
 
       // The Abschluss page deliberately has no "TaxMe ... >" breadcrumb.
-      const crumb = s === 'abschluss' ? '' : `<div id="crumb">TaxMe ${year} > ${SECTIONS.find(x => x[0] === s)?.[1] || 'Übersicht'}</div>`;
+      const crumb = s === 'abschluss' ? '' : `<div id="crumb">TaxMe ${year} > ${state.crumbLabel || SECTIONS.find(x => x[0] === s)?.[1] || 'Übersicht'}</div>`;
       return html(shell(`TaxMe ${year}`, `${crumb}${menu(year)}<div id="content">${blocked}${bodyFor}</div>`));
     }
 
