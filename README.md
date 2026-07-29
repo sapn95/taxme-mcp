@@ -171,17 +171,17 @@ their own MCP config.
 | Tool | Args | Purpose |
 | --- | --- | --- |
 | `taxme_status` | — | `ok` or `login_required` |
-| `taxme_login` | — | open a **visible** window for the SwissID/AGOV login (waits up to ~8 min); caches the session |
+| `taxme_login` | — | open a **visible** window for the SwissID/AGOV login (waits up to ~8 min); caches the session. Only `status: "ok"` means the login went through — the login page is served on the portal's own address, so being there proves nothing, and the portal is asked afterwards whether anybody is actually logged in. A login that was never completed comes back as `login_required` and nothing is cached |
 | `taxme_account_statement` | — | open amounts (CHF) per tax year — Kantons-/Gemeindesteuern, direkte Bundessteuer, Gemeindeabgaben. A statement prints a due date under every claim, and the 2024 assessment falls due in 2025, so an amount is only reported under a year the page itself puts it under; when none can be, you get `status: "unparsable"` rather than an empty list that would read as *nothing owed*. A page that is not a Kontoauszug at all — a maintenance notice, an error page — is `unparsable` too: an empty list of open amounts is only ever reported when the statement itself is on the page |
-| `taxme_list_returns` | — | tax returns (Steuererklärungen) with status (*In Bearbeitung* / *Quittiert* …) |
+| `taxme_list_returns` | — | tax returns (Steuererklärungen) with status (*In Bearbeitung* / *Quittiert* …). An empty list is only reported when the case list itself is on the page: a page that is not one — a maintenance notice, an error page — and a list whose rows carry no year we could tie them to are both `status: "unparsable"`, because *there is nothing to file* must not be concluded from a page that was never asked the question |
 
 **Navigate & edit a return**
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
 | `taxme_open_return` | `year` (number) | open a return for editing; returns the menu sections (handles the edit popup tab). Only `status: "ok"` means it is open — the tab that appears is checked against the year you asked for, so an expired session comes back as `login_required`, a page that is no return as `not_open`, and a different case as `wrong_year` with the year the portal actually opened |
-| `taxme_menu` | — | left-menu sections + status of the open return |
-| `taxme_goto_section` | `name` (string) | click a menu section by name (substring); returns its fields — cut at 60 like `taxme_get_fields`, and saying so with `truncated`/`total` |
+| `taxme_menu` | — | left-menu sections + status of the open return. The menu is on every page of a return and on no other page, so a page carrying none is no return: that comes back as an error naming where the browser is, not as an empty list of sections |
+| `taxme_goto_section` | `name` (string) | click a menu section by name (substring); returns its fields — cut at 60 like `taxme_get_fields`, and saying so with `truncated`/`total`. Landing there is checked: TaxMe refuses to open a section while the form still has errors, and the page it hands back instead is reported as an error naming the section you are really on — not as that section's fields under the name you asked for |
 | `taxme_get_fields` | `limit` (number) | interactive fields on the current page (`id`, `type`, `value`, `label`, `context`, `name` for a radio — the group, i.e. the one question, its button belongs to — and `locked` when the portal has switched the field off); long forms are cut at `limit` (default 60) and the reply says how many were left out |
 | `taxme_snapshot` | `screenshot` (bool) | breadcrumb + url of the current page; `screenshot: true` writes a PNG and returns its path |
 | `taxme_fill` | `values: [{target, value}]` | set fields — `target` = field `id` **or** a label/context substring; `value` must be text, a number or `true`/`false`; text→typed, radio→option value or label, checkbox→`true`/`false` (`ja`/`nein`, `1`/`0`, `on`/`off` are understood too). `fields_after` is cut at 60 too, and says so |

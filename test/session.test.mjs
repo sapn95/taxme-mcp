@@ -88,6 +88,47 @@ describe('session caching', () => {
   });
 });
 
+describe('what counts as a completed login', () => {
+  test('being on the portal is not being logged in to it', SLOW, async () => {
+    // taxme_login waited for the browser to reach the portal's host and called
+    // that the login. But the login page is served on the portal's own host —
+    // the fixture's AGOV page is, and so is BE-Login's own — so the condition
+    // was already true when the tool's very first navigation landed there:
+    // waitForURL returned before anybody had touched the keyboard. Driven
+    // against the fixture with nobody logging in, the tool answered status ok
+    // and "BE-Login/AGOV erfolgreich, Session in state.json gespeichert" over a
+    // browser sitting on the AGOV form, wrote a state file with no session in
+    // it, and the next call came back login_required. That cannot be tested by
+    // leaving nobody at the keyboard — a fixed tool then waits the full eight
+    // minutes, which is the point of it — so the human is let through here and
+    // the portal is the thing that says nobody is logged in: "Angemeldet als:
+    // Benutzer", the 200 that looks normal and is not a session, which `ensure`
+    // was taught to catch and this tool never asked about at all.
+    await human(true);
+    await portal.control({ anonymous: true });
+    const stateFile = join(scratch, 'anon.json');
+    const srv = await spawnServer({ TAXME_STATE: stateFile, TAXME_PROFILE: join(scratch, 'p6') });
+    const { data } = await srv.call('taxme_login');
+    await portal.control({ anonymous: false });
+    assert.notEqual(data.status, 'ok',
+      `a login that never happened was reported as done: ${JSON.stringify(data)}`);
+    assert.equal(data.status, 'login_required', JSON.stringify(data));
+    assert.match(data.message, /nicht abgeschlossen/);
+    assert.ok(!existsSync(stateFile),
+      'and nothing was cached — the promise of a session that survives a restart was the worst part of it');
+  });
+
+  test('a login that does go through is still reported as one', SLOW, async () => {
+    // The other half: the check must not turn every login into a failure.
+    await human(true);
+    const srv = await spawnServer({ TAXME_STATE: join(scratch, 'good.json'), TAXME_PROFILE: join(scratch, 'p7') });
+    const { data } = await srv.call('taxme_login');
+    assert.equal(data.status, 'ok', JSON.stringify(data));
+    assert.equal(data.session_cache, 'saved');
+    assert.ok(readFileSync(join(scratch, 'good.json'), 'utf8').includes(portal.SESSION));
+  });
+});
+
 describe('a profile another browser is holding', () => {
   test('clears the stale lock and starts anyway', SLOW, async () => {
     await human(false);
