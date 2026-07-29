@@ -192,7 +192,7 @@ their own MCP config.
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
-| `taxme_submit_return` | `confirm` (bool) | **⚠️ DANGER — irreversible final submission** (*Abschluss → Steuererklärung einreichen*). Without `confirm: true` it only opens the *Abschluss* page and returns a **dry-run** naming in `would_click` the one button a confirmed call would press; **nothing is submitted**. Reaching that page is a precondition — with no submit button on it the call is refused instead of pressing whatever the current page offers. Only `confirm: true` actually files the return. |
+| `taxme_submit_return` | `confirm` (bool) | **⚠️ DANGER — irreversible final submission** (*Abschluss → Steuererklärung einreichen*). Without `confirm: true` it only opens the *Abschluss* page and returns a **dry-run** naming in `would_click` the one button a confirmed call would press; **nothing is submitted**. Reaching that page is a precondition — with no submit button on it the call is refused instead of pressing whatever the current page offers. A page that already reports the return as filed (`already_submitted`) is refused as well, `confirm: true` and all: a confirmation that was on the page beforehand cannot prove anything about a second click. Only `confirm: true` actually files the return. |
 
 A typical edit session: `taxme_login` → `taxme_list_returns` →
 `taxme_open_return {year}` → `taxme_goto_section {name}` → `taxme_get_fields` →

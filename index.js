@@ -657,6 +657,13 @@ async function clickByText(p, label) {
   return { clicked: real, ...(real === label ? {} : { requested: label }), url_changed: p.url() !== before };
 }
 
+// What the portal saying "this return is in" looks like. Read after the click,
+// where it is the proof that the submission happened, and before it as well,
+// because the same sentence sits on the Abschluss page of a return that was
+// filed at some earlier point — and a sentence that was already there proves
+// nothing about a button pressed afterwards.
+const SUBMITTED_RX = /wurde eingereicht|erfolgreich eingereicht|Einreichung erfolgreich|eingereicht am/i;
+
 // ---- tool definitions ----
 const TOOLS = [
   { name: 'taxme_status', description: 'Check whether the BE-Login/TaxMe session is alive (ok) or an interactive SwissID/AGOV login is needed (login_required). Call this before anything else; it also refreshes the cached session.', inputSchema: { type: 'object', properties: {} } },
@@ -671,7 +678,7 @@ const TOOLS = [
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
   { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
+  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
 const server = new Server({ name: PKG.name, version: PKG.version }, { capabilities: { tools: {} } });
@@ -933,10 +940,29 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         const b = await byText(p, label, true);
         if (b) { submit = b; wanted = label; break; }
       }
+      // And what the page says about the return before anything is pressed.
+      // The proof of a submission is a sentence in the page text, and that
+      // sentence used to be read only afterwards — so a page that was already
+      // carrying it answered for the click as well. A return that is already in
+      // comes back to an Abschluss page reading "Ihre Steuererklärung wurde
+      // eingereicht"; the portal then refused the second click, nothing left the
+      // browser, and this reported submitted:true on the strength of a sentence
+      // that had been there all along. That is the one wrong answer this server
+      // must never give, and it was being given by the very check written to
+      // prevent it. Read here, the same sentence settles two questions instead:
+      // why there is no button, and whether a confirmation found later is this
+      // call's doing or an earlier one's.
+      const already = SUBMITTED_RX.test(await p.innerText('body').catch(() => ''));
       if (!submit) {
         return text({
           submitted: false,
-          error: 'Kein Einreiche-Button auf der Seite — die Abschluss-Seite ist nicht offen (oder die Steuererklärung ist bereits eingereicht); es wurde nichts eingereicht',
+          ...(already ? { already_submitted: true } : {}),
+          // Which of the two it is, rather than the guess this used to offer:
+          // the page itself answers that, and a return that is already filed is
+          // not the same problem as a page we never reached.
+          error: already
+            ? 'Die Steuererklärung ist laut Seite bereits eingereicht, und einen Einreiche-Button gibt es nicht mehr — es wurde nichts eingereicht'
+            : 'Kein Einreiche-Button auf der Seite — die Abschluss-Seite ist nicht offen; es wurde nichts eingereicht',
           ...(await snapshot(p, args.confirm === true)),
         });
       }
@@ -946,7 +972,30 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const clicked = (await submit.evaluate(e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || wanted;
       const snap = await snapshot(p, args.confirm !== true);
       if (args.confirm !== true) {
-        return text({ dry_run: true, message: 'Nicht eingereicht. Abschluss-Seite geöffnet. Zum tatsächlichen Einreichen taxme_submit_return mit confirm:true aufrufen.', would_click: clicked, ...snap, buttons: (await readFields(p)).filter(f => /submit|button/.test(f.type)) });
+        return text({
+          dry_run: true,
+          ...(already ? { already_submitted: true } : {}),
+          // A dry run exists to tell a caller what confirming would do. On a
+          // return that is already in it said "Abschluss-Seite geöffnet" and
+          // held up the button — an invitation to file the thing a second time,
+          // over a page plainly reporting the first.
+          message: already
+            ? 'Nicht eingereicht. Die Seite weist die Steuererklärung als bereits eingereicht aus — ein Aufruf mit confirm:true wird deshalb abgelehnt und drückt nichts. Bitte im Portal prüfen.'
+            : 'Nicht eingereicht. Abschluss-Seite geöffnet. Zum tatsächlichen Einreichen taxme_submit_return mit confirm:true aufrufen.',
+          would_click: clicked, ...snap,
+          buttons: (await readFields(p)).filter(f => /submit|button/.test(f.type)),
+        });
+      }
+      // Nothing is pressed on a page that already reports the return as filed.
+      // Whatever came back afterwards could not be attributed to this click, so
+      // the call could never answer honestly — and finding out costs an
+      // irreversible button press on a return that has already had one.
+      if (already) {
+        return text({
+          submitted: false, already_submitted: true, would_click: clicked,
+          error: 'Die Seite wies die Steuererklärung schon vor dem Klick als eingereicht aus — es wurde nichts gedrückt, weil sich an dieser Seite nicht ablesen liesse, ob dieser Aufruf etwas bewirkt hat. Bitte im Portal prüfen.',
+          ...(await snapshot(p, true)),
+        });
       }
       await submit.click();
       await p.waitForTimeout(6000);
@@ -955,7 +1004,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // "submitted: true" purely because something with the right label had
       // been pressed. That is the one wrong answer this server must never give.
       const body = await p.innerText('body').catch(() => '');
-      const confirmed = /wurde eingereicht|erfolgreich eingereicht|Einreichung erfolgreich|eingereicht am/i.test(body);
+      const confirmed = SUBMITTED_RX.test(body);
       if (!confirmed) {
         return text({
           submitted: false,

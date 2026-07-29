@@ -132,6 +132,58 @@ describe('the submit gate', () => {
     assert.equal(portal.state.submitted[0].year, '2025');
     rmSync(data.screenshot, { force: true });
   });
+
+  // Everything below runs on the return the test above filed, which is the only
+  // way to get a page that says "eingereicht" before anything has been clicked.
+  test('a confirmation that predates the click is not proof of the click', SLOW, async () => {
+    // The proof of a submission is a sentence in the page text, and it was only
+    // ever read after the button had been pressed. The return above is in, so
+    // the Abschluss page now carries that sentence beforehand — and here the
+    // portal refuses the click, nothing leaves the browser, and this reported
+    // submitted:true all the same, on the strength of a sentence that had been
+    // there all along. The one wrong answer this server must never give, given
+    // by the very check written to prevent it.
+    assert.equal(portal.state.submitted.length, 1, 'this test needs the return above to be filed');
+    await portal.control({ rejectSubmit: true });
+    const clicksBefore = portal.state.clicks.length;
+    const { data } = await call('taxme_submit_return', { confirm: true });
+    await portal.control({ rejectSubmit: false });
+    assert.equal(data.submitted, false,
+      `a refused click was reported as a submission: ${JSON.stringify(data).slice(0, 240)}`);
+    assert.equal(data.already_submitted, true, JSON.stringify(data).slice(0, 240));
+    assert.deepEqual(portal.state.clicks.slice(clicksBefore), [],
+      'and the irreversible button must not be pressed a second time to find out');
+    assert.equal(portal.state.submitted.length, 1, 'nothing new arrived at the portal');
+    if (data.screenshot) rmSync(data.screenshot, { force: true });
+  });
+
+  test('the dry run says so, instead of offering the button again', SLOW, async () => {
+    // A dry run exists to tell a caller what confirming would do. On a return
+    // that is already in it announced "Abschluss-Seite geöffnet" and held up
+    // the einreichen button — an invitation to file the thing twice, over a
+    // page plainly reporting the first one.
+    const { data } = await call('taxme_submit_return');
+    assert.equal(data.already_submitted, true,
+      `the dry run offered the button again without a word: ${JSON.stringify(data).slice(0, 240)}`);
+    assert.match(data.message, /bereits eingereicht/i);
+    assert.equal(portal.state.submitted.length, 1);
+    if (data.screenshot) rmSync(data.screenshot, { force: true });
+  });
+
+  test('a filed return is named as such, not as a page we never reached', SLOW, async () => {
+    // What a real portal does once the return is in: the confirmation stays,
+    // the button goes. "Kein Einreiche-Button — die Abschluss-Seite ist nicht
+    // offen" is then the wrong diagnosis of the right refusal, and the page
+    // itself says which of the two it is.
+    await portal.control({ submittedKeepsButton: false });
+    const { data } = await call('taxme_submit_return', { confirm: true });
+    await portal.control({ submittedKeepsButton: true });
+    assert.equal(data.submitted, false, JSON.stringify(data).slice(0, 240));
+    assert.equal(data.already_submitted, true, JSON.stringify(data).slice(0, 240));
+    assert.match(data.error, /bereits eingereicht/i);
+    assert.equal(portal.state.submitted.length, 1, 'nothing new arrived at the portal');
+    if (data.screenshot) rmSync(data.screenshot, { force: true });
+  });
 });
 
 describe('secrets', () => {
