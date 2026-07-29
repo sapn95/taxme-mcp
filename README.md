@@ -172,7 +172,7 @@ their own MCP config.
 | --- | --- | --- |
 | `taxme_status` | — | `ok` or `login_required` |
 | `taxme_login` | — | open a **visible** window for the SwissID/AGOV login (waits up to ~8 min); caches the session |
-| `taxme_account_statement` | — | open amounts (CHF) per tax year — Kantons-/Gemeindesteuern, direkte Bundessteuer, Gemeindeabgaben. A statement prints a due date under every claim, and the 2024 assessment falls due in 2025, so an amount is only reported under a year the page itself puts it under; when none can be, you get `status: "unparsable"` rather than an empty list that would read as *nothing owed* |
+| `taxme_account_statement` | — | open amounts (CHF) per tax year — Kantons-/Gemeindesteuern, direkte Bundessteuer, Gemeindeabgaben. A statement prints a due date under every claim, and the 2024 assessment falls due in 2025, so an amount is only reported under a year the page itself puts it under; when none can be, you get `status: "unparsable"` rather than an empty list that would read as *nothing owed*. A page that is not a Kontoauszug at all — a maintenance notice, an error page — is `unparsable` too: an empty list of open amounts is only ever reported when the statement itself is on the page |
 | `taxme_list_returns` | — | tax returns (Steuererklärungen) with status (*In Bearbeitung* / *Quittiert* …) |
 
 **Navigate & edit a return**
@@ -186,13 +186,13 @@ their own MCP config.
 | `taxme_snapshot` | `screenshot` (bool) | breadcrumb + url of the current page; `screenshot: true` writes a PNG and returns its path |
 | `taxme_fill` | `values: [{target, value}]` | set fields — `target` = field `id` **or** a label/context substring; `value` must be text, a number or `true`/`false`; text→typed, radio→option value or label, checkbox→`true`/`false` (`ja`/`nein`, `1`/`0`, `on`/`off` are understood too). `fields_after` is cut at 60 too, and says so |
 | `taxme_click` | `label` (string) | click a button/link by visible text (*Neuen Eintrag erfassen*, *Speichern*, *Nächste Seite*, *Vorherige Seite*, *Ändern* …); an exact label wins, a substring is the fallback, and `clicked` names the button that was actually pressed |
-| `taxme_results` | — | read the *Ergebnisse* / Steuerberechnung of the open return |
+| `taxme_results` | — | read the *Ergebnisse* / Steuerberechnung of the open return. Reaching that section is a precondition: *Ergebnisse* is a left-menu entry on **every** page of the return, so the calculation is read from a heading the menu entry cannot be — a portal that refused to open the section comes back as an error naming the page you are actually on, not as that page's text |
 
 **Submit (gated)**
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
-| `taxme_submit_return` | `confirm` (bool) | **⚠️ DANGER — irreversible final submission** (*Abschluss → Steuererklärung einreichen*). Without `confirm: true` it only opens the *Abschluss* page and returns a **dry-run** naming in `would_click` the one button a confirmed call would press; **nothing is submitted**. Reaching that page is a precondition — with no submit button on it the call is refused instead of pressing whatever the current page offers. A page that already reports the return as filed (`already_submitted`) is refused as well, `confirm: true` and all: a confirmation that was on the page beforehand cannot prove anything about a second click. Only `confirm: true` actually files the return. |
+| `taxme_submit_return` | `confirm` (bool) | **⚠️ DANGER — irreversible final submission** (*Abschluss → Steuererklärung einreichen*). Without `confirm: true` it only opens the *Abschluss* page and returns a **dry-run** naming in `would_click` the one button a confirmed call would press; **nothing is submitted**. Reaching that page is a precondition — with no submit button on it the call is refused instead of pressing whatever the current page offers. A page that already reports the return as filed (`already_submitted`) is refused as well, `confirm: true` and all: a confirmation that was on the page beforehand cannot prove anything about a second click. So is a page whose text could not be read at all (`page_unreadable`), for the same reason one step further back — a read that failed is not a page that said no — the submit button is then named as `not_clicked`, because `would_click` is a promise about the confirmed call and that call presses nothing. Only `confirm: true` actually files the return. |
 
 A typical edit session: `taxme_login` → `taxme_list_returns` →
 `taxme_open_return {year}` → `taxme_goto_section {name}` → `taxme_get_fields` →
@@ -206,7 +206,10 @@ smooths over, so you don't have to:
 - **Radio buttons** are set by clicking the associated `<label>`, falling back to
   a JS `click()` + a dispatched `change` event — plain `.check()` on the input
   doesn't reliably trigger JSF's listeners. In `taxme_fill` a radio `value` may
-  be the option value **or** its visible label.
+  be the option value **or** its visible label. The button is **read back**
+  afterwards: a JSF group is re-rendered by the server when it hears the change
+  and can come back unanswered, and an answer that did not stick must not be
+  reported as given.
 - **Switched-off widgets.** A section can be *Ausgeschaltet aufgrund Ihrer
   Eingaben*, and its inputs are then `disabled`. The browser never submits a
   disabled input, so `taxme_fill` refuses one (`locked: "disabled"`) instead of
@@ -300,7 +303,10 @@ that can still be ticked from JavaScript but never submitted, element ids with
 colons in them, an amount field that drops the centimes, a return that opens in a
 second tab (and one that comes back as the login page, as a maintenance page, or
 as a different tax year), menu entries and buttons that are prefixes of each
-other, a Kontoauszug whose due dates print years that are not headings, and a
+other, a radio group the server re-renders and hands back unanswered, a section
+the portal refuses to open so that the overview you were on comes back with a
+banner, a Kontoauszug whose due dates print years that are not headings (and a
+Kontoauszug link that answers with no Kontoauszug on it at all), and a
 session cookie whose absence shows up as a perfectly normal-looking page saying
 *Angemeldet als: Benutzer*. `TAXME_BASE_URL` points the server at it, so no test can reach the
 real BE-Login. Every assertion about a click or a submission is made against

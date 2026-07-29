@@ -129,6 +129,21 @@ const personalien = () => `
       <label for="form:pers:kk2:1">verzichtet</label>
     </td>
   </tr>
+  <tr>
+    <!-- A group the server re-renders when it hears the change and hands back
+         unanswered — a JSF ajax update that did not keep what it was told, the
+         same shape as a validation the portal decides for itself. The click
+         landed, the change fired, and nothing is selected afterwards. -->
+    <td>Vorsorge</td>
+    <td>
+      <input class="jsf-radio" type="radio" name="vs" id="form:pers:vs:0" value="saeule3a"
+             onchange="ev('vorsorge', this.value); this.checked = false;">
+      <label for="form:pers:vs:0">Säule 3a</label>
+      <input class="jsf-radio" type="radio" name="vs" id="form:pers:vs:1" value="keine"
+             onchange="ev('vorsorge', this.value); this.checked = false;">
+      <label for="form:pers:vs:1">keine</label>
+    </td>
+  </tr>
   <tr><td>Beruf</td><td><input type="text" id="form:pers:beruf" value=""></td></tr>
   <tr><td>Gemeinde</td><td>
     <select id="form:pers:gemeinde">
@@ -185,7 +200,9 @@ export function start() {
     landOn: null,       // the section a reopened return comes up on when the link names none
     noCalculation: false, // Ergebnisse exists but the portal has not computed anything yet
     abschlussBlocked: false, // the portal will not open Abschluss and keeps you where you were
+    ergebnisseBlocked: false, // …and the same refusal for Ergebnisse
     submittedKeepsButton: true, // an already-submitted return still offers the einreichen button
+    statementBroken: false, // the Kontoauszug link answers 200 with something that is not one
   };
 
   const route = (req, res, body) => {
@@ -244,6 +261,15 @@ export function start() {
     }
 
     if (u.pathname === STATEMENT) {
+      // 200 OK, a live session, and no statement on the page at all — the
+      // portal is simply having a bad day. Nothing here says anything about
+      // what is owed, and "nothing owed" is the one answer that must not be
+      // read off a page that was never asked the question.
+      if (state.statementBroken) {
+        return html(shell('Wartung', `
+          <div id="user">Angemeldet als: Test User</div>
+          <h1>Wartungsarbeiten</h1><p>Bitte später erneut versuchen.</p>`));
+      }
       // A statement that prints its years inside the rows instead of above
       // them. Nothing can be tied to a year here, and "nothing outstanding" is
       // the one answer that must not come back.
@@ -301,6 +327,15 @@ export function start() {
       // banner — so nothing on the page says "Abschluss" except the menu entry
       // that every page of the return carries anyway.
       let blocked = '';
+      // The same refusal for Ergebnisse, which is if anything likelier: there
+      // is nothing to compute while the form still has errors. You come back to
+      // an overview page — and an overview page of this portal carries amounts,
+      // which is what makes "the page has a number on it" no proof of a tax
+      // calculation.
+      if (s === 'ergebnisse' && state.ergebnisseBlocked) {
+        s = 'wertschriften';
+        blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
+      }
       if (s === 'abschluss' && state.abschlussBlocked) {
         s = 'einkuenfte';
         blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
@@ -349,7 +384,12 @@ export function start() {
           <form method="post" action="${EDIT}?year=2025&amp;s=wvz">
             <input type="submit" name="b" value="Speichern und schliessen">
           </form>`,
-        wertschriften: '<h2>Wertschriften</h2><p>Übersicht Wertschriften.</p>',
+        // An overview page, and an overview page of this portal totals things
+        // up. So it carries an amount without being a tax calculation, which
+        // is exactly the page you are left on when the portal refuses to open
+        // Ergebnisse.
+        wertschriften: `<h2>Wertschriften</h2><p>Übersicht Wertschriften.</p>
+          <table><tr><td>Total Bruttoertrag</td><td>1’234.00</td></tr></table>`,
         liegenschaften: '<h2>Liegenschaften</h2>',
       }[s] || '<p>Bitte wählen Sie links einen Abschnitt.</p>';
 

@@ -110,6 +110,27 @@ describe('reading', () => {
     assert.match(data.error, /Jahresüberschrift/);
   });
 
+  test('a page that is not a Kontoauszug is not read as nothing owed', SLOW, async () => {
+    // An empty result is an answer, and it reads as "you owe nothing". That was
+    // guarded for the one page that carries amounts under no heading — but the
+    // parser produces the same empty result for any page at all, and the check
+    // that decided the session was live is happy with a 200 that is not a
+    // login. The portal answering the Kontoauszug link with a maintenance page
+    // therefore came back as status ok and an empty list of open amounts: a
+    // clean slate concluded from a page that had never been asked the
+    // question, in the direction that costs money.
+    await portal.control({ statementBroken: true });
+    const { data } = await srv.call('taxme_account_statement');
+    await portal.control({ statementBroken: false });
+    assert.notEqual(data.status, 'ok',
+      `a maintenance page was reported as nothing owed: ${JSON.stringify(data)}`);
+    assert.match(data.error ?? '', /Kontoauszug/);
+
+    const back = await srv.call('taxme_account_statement');
+    assert.equal(back.data.status, 'ok', 'and the real statement is still read');
+    assert.equal(back.data.open_amounts_chf['2025'].kantons_gemeinde, "1'234.55");
+  });
+
   test('lists the returns with their status, and skips the header row', SLOW, async () => {
     // The header says "Steuererklärung" too. A parser that looks for that word
     // rather than for a year reported it as a return with the status "Status".
@@ -428,6 +449,24 @@ describe('filling the form', () => {
       'and it left the group as it found it');
   });
 
+  test('a radio the portal hands back unanswered is not reported as set', SLOW, async () => {
+    // The radio was the only kind of field here that claimed success without
+    // looking. The checkbox reads back because an inverted answer once got
+    // through, the text box because the whole-franc converter alters what it is
+    // given, the dropdown because a readback that fails is no proof — and the
+    // radio returned ok:true on the strength of having called setChoice. A JSF
+    // group is re-rendered by the server when it hears the change, and this one
+    // comes back with nothing selected: the reply said the option was chosen
+    // while the widget was empty, and on a tax return a radio decides a civil
+    // status, a confession, which spouse claims a deduction.
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'Vorsorge', value: 'saeule3a' }] });
+    assert.equal(data.results[0].ok, false,
+      `an answer that did not stick was reported as given: ${JSON.stringify(data.results[0])}`);
+    assert.match(data.results[0].error, /nicht übernommen|nicht bestätigen/);
+    assert.equal(data.fields_after.find(f => f.id === 'form:pers:vs:0').value, 'unchecked:saeule3a',
+      'the fixture is supposed to drop the answer — otherwise this proves nothing');
+  });
+
   test('picks a dropdown option by value and by visible label', SLOW, async () => {
     const byValue = await srv.call('taxme_fill', { values: [{ target: 'Gemeinde', value: '351' }] });
     assert.equal(byValue.data.results[0].value, '351', JSON.stringify(byValue.data.results[0]));
@@ -551,6 +590,28 @@ describe('snapshot and results', () => {
     // The other half: stripping the dates must not take the amounts with them.
     const { data } = await srv.call('taxme_results');
     assert.match(data.text ?? '', /4['’]321\.00/, `a real calculation was refused: ${JSON.stringify(data).slice(0, 240)}`);
+  });
+
+  test('a page the portal never left is not the Ergebnisse page', SLOW, async () => {
+    // "Ergebnisse" is a left-menu entry, and the menu is on every page of the
+    // return — so testing the page text for the word could not fail, exactly as
+    // the same test for "Abschluss" could not. TaxMe refuses to open a section
+    // while the form still has errors: the click lands, the overview you were
+    // on comes back with a banner, and this then sliced from the menu entry
+    // and handed that page back as the tax calculation. An overview page totals
+    // things up, so the amount the check insists on was there too — the
+    // portal's own error banner came back inside the "calculation".
+    await portal.control({ ergebnisseBlocked: true });
+    const { data } = await srv.call('taxme_results');
+    await portal.control({ ergebnisseBlocked: false });
+    assert.equal(data.text, undefined,
+      `another page was handed back as the calculation: ${JSON.stringify(data).slice(0, 300)}`);
+    assert.match(data.error ?? '', /nicht geöffnet|nicht öffnen/,
+      `and it has to say the section was never opened: ${JSON.stringify(data).slice(0, 300)}`);
+    assert.match(data.breadcrumb ?? '', /Wertschriften/, 'and where the browser actually is');
+
+    const back = await srv.call('taxme_results');
+    assert.match(back.data.text ?? '', /4['’]321\.00/, 'and the real calculation is still read');
   });
 });
 
