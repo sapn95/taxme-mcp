@@ -151,6 +151,9 @@ describe('the submit gate', () => {
     assert.equal(data.submitted, false,
       `a refused click was reported as a submission: ${JSON.stringify(data).slice(0, 240)}`);
     assert.equal(data.already_submitted, true, JSON.stringify(data).slice(0, 240));
+    assert.equal(data.would_click, undefined,
+      `a call that pressed nothing must not report what it "would" press: ${JSON.stringify(data).slice(0, 240)}`);
+    assert.equal(data.not_clicked, 'Steuererklärung einreichen');
     assert.deepEqual(portal.state.clicks.slice(clicksBefore), [],
       'and the irreversible button must not be pressed a second time to find out');
     assert.equal(portal.state.submitted.length, 1, 'nothing new arrived at the portal');
@@ -166,6 +169,16 @@ describe('the submit gate', () => {
     assert.equal(data.already_submitted, true,
       `the dry run offered the button again without a word: ${JSON.stringify(data).slice(0, 240)}`);
     assert.match(data.message, /bereits eingereicht/i);
+    // would_click is a promise about the confirmed call — the tool description
+    // and the README both define it as "the one button a confirmed call would
+    // press". Here the confirmed call presses nothing and refuses, and the dry
+    // run went on naming a button under that key all the same: the tool
+    // promising precisely what it now declines to do, over a page that reports
+    // the return as already filed.
+    assert.equal(data.would_click, undefined,
+      `the dry run promised a press the confirmed call refuses: ${JSON.stringify(data).slice(0, 240)}`);
+    assert.equal(data.not_clicked, 'Steuererklärung einreichen',
+      'and the button that is there is still named, for what it is');
     assert.equal(portal.state.submitted.length, 1);
     if (data.screenshot) rmSync(data.screenshot, { force: true });
   });

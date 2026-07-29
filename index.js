@@ -11,11 +11,12 @@
 // (Neuen Eintrag erfassen, Speichern, Nächste Seite …) and read the results.
 // Filling the JSF form has quirks. A radio is set through its label, or failing
 // that with a dispatched change event, because the input itself is hidden and
-// the widget only commits on `change`. The edit view opens in its own tab. The
-// amount fields take whole francs only: a value they alter is read back and
-// reported as a warning rather than quietly accepted. A field the portal has
-// switched off is refused, because the browser never submits a disabled input
-// however set it looks afterwards.
+// the widget only commits on `change` — and then read back, because a group the
+// server re-renders can come back unanswered. The edit view opens in its own
+// tab. The amount fields take whole francs only: a value they alter is read
+// back and reported as a warning rather than quietly accepted. A field the
+// portal has switched off is refused, because the browser never submits a
+// disabled input however set it looks afterwards.
 //
 // SAFETY: this server fills DRAFTS. The final submission (Abschluss →
 // einreichen) is only done by `taxme_submit_return`, which requires an
@@ -302,8 +303,25 @@ async function readAccountStatement(p) {
   // An empty result reads as "nothing outstanding", which is an answer, not a
   // parse failure. If the page carries the amounts but no heading we could tie
   // them to, say so rather than reporting a clean slate the page never showed.
-  if (!Object.keys(years).length && /Kantons- und Gemeindesteuern|Direkte Bundessteuer/.test(text)) {
-    return { status: 'unparsable', error: 'Der Kontoauszug zeigt Beträge, aber keine Jahresüberschrift, der sie sich zuordnen lassen — bitte im Portal nachsehen.' };
+  if (!Object.keys(years).length) {
+    if (/Kantons- und Gemeindesteuern|Direkte Bundessteuer/.test(text)) {
+      return { status: 'unparsable', error: 'Der Kontoauszug zeigt Beträge, aber keine Jahresüberschrift, der sie sich zuordnen lassen — bitte im Portal nachsehen.' };
+    }
+    // And the wider half of the same mistake. Nothing above proves the page we
+    // parsed is a Kontoauszug: `ensure` only rules out a redirect to the login
+    // and an HTTP error, so any 200 the portal serves under this link — a
+    // maintenance notice, an error page, a redesign — parses to zero years and
+    // came back as status ok with no open amounts. That is a clean slate read
+    // off a page which was never asked the question, and it is wrong in the
+    // direction that costs money. An empty answer needs the statement's own
+    // furniture to stand on.
+    if (!/Kontoauszug|Forderung|Offene Beträge/i.test(text)) {
+      return {
+        status: 'unparsable',
+        error: 'Die Seite hinter dem Kontoauszug-Link sieht nicht nach einem Kontoauszug aus — ob etwas offen ist, lässt sich daraus nicht sagen; bitte im Portal nachsehen.',
+        page: text.replace(/\s+/g, ' ').trim().slice(0, 200),
+      };
+    }
   }
   return { status: 'ok', open_amounts_chf: years };
 }
@@ -328,18 +346,25 @@ async function listReturns(p) {
   return { status: 'ok', returns: rows };
 }
 
+// The three words this portal prints directly beneath a menu entry to say what
+// state that form is in. They are what makes a line of the page text a menu
+// entry rather than page content: readMenu pairs them up, and taxme_results
+// uses them to tell the "Ergebnisse" in the left menu — which is on every page
+// of the return — from the "Ergebnisse" that heads the calculation. Kept in one
+// place because the two would otherwise drift apart.
+const MENU_STATUS = '^(?:Formular in Bearbeitung|Abgeschlossenes Formular|Ausgeschaltet aufgrund Ihrer Eingaben)$';
+
 // Left menu of the edit view: section name -> status
 async function readMenu(p) {
-  return p.evaluate(() => {
+  return p.evaluate(src => {
+    const status = new RegExp(src);
     const items = [];
     const body = document.body.innerText.split('\n').map(s => s.trim()).filter(Boolean);
     for (let i = 0; i < body.length - 1; i++) {
-      if (/^(Formular in Bearbeitung|Abgeschlossenes Formular|Ausgeschaltet aufgrund Ihrer Eingaben)$/.test(body[i + 1])) {
-        items.push({ section: body[i], status: body[i + 1] });
-      }
+      if (status.test(body[i + 1])) items.push({ section: body[i], status: body[i + 1] });
     }
     return items;
-  });
+  }, MENU_STATUS);
 }
 
 // Interactive fields on the current page. `limit` keeps a tool result readable;
@@ -569,6 +594,25 @@ async function fillOne(p, target, value) {
     // can have a single option switched off.
     if (pick.locked) return lockedResult(target, pick);
     await setChoice(p, pick.id, true);
+    // And read it back. Every other kind of field here does — the checkbox
+    // because claiming a state without looking is how an inverted answer went
+    // unnoticed, the text box because the whole-franc converter alters what it
+    // is given, the dropdown because a readback that fails is not proof. The
+    // radio was the one path that looked at nothing at all and returned ok on
+    // the strength of having called setChoice. A JSF group is re-rendered by
+    // the server when it hears the change, and it can come back unanswered, or
+    // under ids that are not the ones we just set; either way the reply said
+    // the option was chosen. A radio on a tax return decides a civil status, a
+    // confession, which of two spouses claims a deduction.
+    const stuck = await p.evaluate(i => document.getElementById(i)?.checked, pick.id);
+    if (stuck !== true) {
+      return {
+        target, ok: false, set: pick.id,
+        error: stuck === undefined
+          ? `Das Optionsfeld "${pick.id}" ist nach dem Setzen nicht mehr auf der Seite — ob die Antwort angekommen ist, lässt sich nicht bestätigen`
+          : `Die Option "${value}" blieb nicht ausgewählt — das Portal hat die Antwort nicht übernommen`,
+      };
+    }
     return { target, ok: true, set: pick.id };
   }
   if (f.type === 'checkbox') {
@@ -668,17 +712,17 @@ const SUBMITTED_RX = /wurde eingereicht|erfolgreich eingereicht|Einreichung erfo
 const TOOLS = [
   { name: 'taxme_status', description: 'Check whether the BE-Login/TaxMe session is alive (ok) or an interactive SwissID/AGOV login is needed (login_required). Call this before anything else; it also refreshes the cached session.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_login', description: 'Open a visible window for the SwissID/AGOV login (waits up to 8 min).', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_account_statement', description: 'Open tax amounts (CHF) per tax year. Amounts are only reported under a year the statement itself puts them under; if none can be, the answer is status "unparsable" rather than an empty list that would read as nothing owed.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_account_statement', description: 'Open tax amounts (CHF) per tax year. Amounts are only reported under a year the statement itself puts them under; if none can be, the answer is status "unparsable" rather than an empty list that would read as nothing owed. A page that is not a Kontoauszug at all — a maintenance notice, an error page — is "unparsable" too: an empty list is only reported when the statement itself is on the page.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_list_returns', description: 'Tax returns with status.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab. Only status "ok" means the return is open: the page is checked against the year that was asked for, so a login page or another case comes back as login_required / not_open / wrong_year instead.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
   { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, name for a radio — the group, i.e. the one question, its button belongs to — and locked when the portal has switched the field off; a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
-  { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
+  { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards — a radio the portal hands back unanswered comes back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
-  { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
+  { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition: "Ergebnisse" is a left-menu entry on every page of the return, so the calculation is read from a heading the menu entry cannot be, and a portal that refused to open the section comes back as an error naming the page you are on instead of that page\'s text.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click. A page whose text could not be read at all (page_unreadable) is refused for the same reason one step further back: a read that failed is not a page that said no. In both cases the submit button is named as not_clicked rather than would_click, because nothing would be pressed.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
 const server = new Server({ name: PKG.name, version: PKG.version }, { capabilities: { tools: {} } });
@@ -877,11 +921,41 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // in the DOM: slicing from the first occurrence returned menu text, and
       // on a page with a long menu the 1500-character window ran out before
       // the calculation. The panel is the later one.
-      const i = body.lastIndexOf('Ergebnisse');
-      if (i < 0) {
-        return text({ error: 'Die Seite nach dem Klick enthält keine Ergebnisse', breadcrumb: (await snapshot(p, false)).breadcrumb });
+      //
+      // But taking the LAST occurrence still leaves the menu entry as the
+      // anchor on every page that is not the results page — and the menu is on
+      // every page of the return, so "the word Ergebnisse is here" could not
+      // fail, exactly as the same test for "Abschluss" could not. TaxMe refuses
+      // to open a section while the form still has errors: the click lands, the
+      // overview you were on comes back with a banner, and this then handed
+      // that page back as the tax calculation. An overview page totals things
+      // up, so the amount demanded below was on it too, and the portal's own
+      // error banner came back inside the "calculation".
+      //
+      // What tells the two apart is what sits underneath: the menu entry is the
+      // line "Ergebnisse" with one of the portal's three form-status words
+      // directly beneath it. Anything else is content, and content is the only
+      // thing worth slicing from — including the breadcrumb, which names the
+      // section the portal really opened.
+      const lines = body.split('\n');
+      const isMenuStatus = new RegExp(MENU_STATUS);
+      let at = -1;
+      for (let k = lines.length - 1; k >= 0; k--) {
+        if (!lines[k].includes('Ergebnisse')) continue;
+        if (lines[k].trim() === 'Ergebnisse' && isMenuStatus.test((lines[k + 1] || '').trim())) continue;
+        at = k;
+        break;
       }
-      const rest = body.slice(i);
+      if (at < 0) {
+        const crumb = (await snapshot(p, false)).breadcrumb;
+        // Two different failures, and the page settles which: a page carrying
+        // the menu entry and nothing else is the return with the section not
+        // opened; a page carrying neither is not the return at all.
+        return text(body.includes('Ergebnisse')
+          ? { error: 'Das Portal hat "Ergebnisse" nicht geöffnet — die Seite führt den Menüpunkt, zeigt aber keine Berechnung; bitte im Portal prüfen', breadcrumb: crumb }
+          : { error: 'Die Seite nach dem Klick enthält keine Ergebnisse', breadcrumb: crumb });
+      }
+      const rest = lines.slice(at).join('\n');
       const slice = rest.slice(0, 1500);
       // And it has to look like a calculation. Any digit used to count, so
       // "Für Steuerjahr 2025 ist keine Berechnung verfügbar" came back as a
@@ -952,17 +1026,34 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // prevent it. Read here, the same sentence settles two questions instead:
       // why there is no button, and whether a confirmation found later is this
       // call's doing or an earlier one's.
-      const already = SUBMITTED_RX.test(await p.innerText('body').catch(() => ''));
+      //
+      // A read that failed is not a page that said no. Swallowed into an empty
+      // string it became "the return is not already filed", and the
+      // irreversible click then went ahead on the strength of a page nobody had
+      // managed to read — after which the post-click read of that same
+      // pre-existing sentence would report submitted:true, which is the exact
+      // answer the pre-read exists to prevent. The window is narrow, because
+      // the button was located a moment earlier and a DOM that answers that
+      // answers this; a navigation landing between the two is what would do it.
+      // Narrow is not none, and the safe reading of "I could not tell" is to
+      // press nothing.
+      const bodyBefore = await p.innerText('body').catch(() => null);
+      const already = bodyBefore === null || SUBMITTED_RX.test(bodyBefore);
+      const unreadable = bodyBefore === null;
       if (!submit) {
         return text({
           submitted: false,
-          ...(already ? { already_submitted: true } : {}),
-          // Which of the two it is, rather than the guess this used to offer:
+          ...(already && !unreadable ? { already_submitted: true } : {}),
+          // Which of the three it is, rather than the guess this used to offer:
           // the page itself answers that, and a return that is already filed is
-          // not the same problem as a page we never reached.
-          error: already
-            ? 'Die Steuererklärung ist laut Seite bereits eingereicht, und einen Einreiche-Button gibt es nicht mehr — es wurde nichts eingereicht'
-            : 'Kein Einreiche-Button auf der Seite — die Abschluss-Seite ist nicht offen; es wurde nichts eingereicht',
+          // not the same problem as a page we never reached — nor as a page
+          // that could not be read, which is a third thing again and must not
+          // be dressed up as either.
+          error: unreadable
+            ? 'Die Seite liess sich nicht lesen, und einen Einreiche-Button gibt es darauf nicht — es wurde nichts eingereicht'
+            : already
+              ? 'Die Steuererklärung ist laut Seite bereits eingereicht, und einen Einreiche-Button gibt es nicht mehr — es wurde nichts eingereicht'
+              : 'Kein Einreiche-Button auf der Seite — die Abschluss-Seite ist nicht offen; es wurde nichts eingereicht',
           ...(await snapshot(p, args.confirm === true)),
         });
       }
@@ -974,15 +1065,27 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       if (args.confirm !== true) {
         return text({
           dry_run: true,
-          ...(already ? { already_submitted: true } : {}),
+          ...(already && !unreadable ? { already_submitted: true } : {}),
+          ...(unreadable ? { page_unreadable: true } : {}),
           // A dry run exists to tell a caller what confirming would do. On a
           // return that is already in it said "Abschluss-Seite geöffnet" and
           // held up the button — an invitation to file the thing a second time,
           // over a page plainly reporting the first.
-          message: already
+          message: unreadable
+            ? 'Nicht eingereicht. Der Seitentext liess sich nicht lesen, also lässt sich nicht sagen, ob die Steuererklärung schon eingereicht ist — ein Aufruf mit confirm:true wird deshalb abgelehnt und drückt nichts.'
+            : already
             ? 'Nicht eingereicht. Die Seite weist die Steuererklärung als bereits eingereicht aus — ein Aufruf mit confirm:true wird deshalb abgelehnt und drückt nichts. Bitte im Portal prüfen.'
             : 'Nicht eingereicht. Abschluss-Seite geöffnet. Zum tatsächlichen Einreichen taxme_submit_return mit confirm:true aufrufen.',
-          would_click: clicked, ...snap,
+          // would_click is a promise about the confirmed call — the tool
+          // description and the README both spell it out as "the one button a
+          // confirmed call would press". On a page that already reports the
+          // return as filed the confirmed call presses nothing and refuses, so
+          // naming a button under that key was the dry run promising exactly
+          // what the same tool now declines to do. The button is still on the
+          // page and is still named, under a key that says what will happen to
+          // it, and `buttons` below describes the page as it always did.
+          ...(already ? { not_clicked: clicked } : { would_click: clicked }),
+          ...snap,
           buttons: (await readFields(p)).filter(f => /submit|button/.test(f.type)),
         });
       }
@@ -992,8 +1095,14 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // irreversible button press on a return that has already had one.
       if (already) {
         return text({
-          submitted: false, already_submitted: true, would_click: clicked,
-          error: 'Die Seite wies die Steuererklärung schon vor dem Klick als eingereicht aus — es wurde nichts gedrückt, weil sich an dieser Seite nicht ablesen liesse, ob dieser Aufruf etwas bewirkt hat. Bitte im Portal prüfen.',
+          // Not would_click: this call is the confirmed one, and it is pressing
+          // nothing. The button is named for what it is — the thing on the page
+          // that was left alone.
+          submitted: false, not_clicked: clicked,
+          ...(unreadable ? { page_unreadable: true } : { already_submitted: true }),
+          error: unreadable
+            ? 'Der Seitentext liess sich vor dem Klick nicht lesen — es wurde nichts gedrückt, weil sich hinterher nicht ablesen liesse, ob eine gefundene Bestätigung von diesem Aufruf stammt. Bitte im Portal prüfen und erneut versuchen.'
+            : 'Die Seite wies die Steuererklärung schon vor dem Klick als eingereicht aus — es wurde nichts gedrückt, weil sich an dieser Seite nicht ablesen liesse, ob dieser Aufruf etwas bewirkt hat. Bitte im Portal prüfen.',
           ...(await snapshot(p, true)),
         });
       }
