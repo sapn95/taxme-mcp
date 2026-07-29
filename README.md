@@ -181,10 +181,10 @@ their own MCP config.
 | --- | --- | --- |
 | `taxme_open_return` | `year` (number) | open a return for editing; returns the menu sections (handles the edit popup tab). Only `status: "ok"` means it is open — the tab that appears is checked against the year you asked for, so an expired session comes back as `login_required`, a page that is no return as `not_open`, and a different case as `wrong_year` with the year the portal actually opened |
 | `taxme_menu` | — | left-menu sections + status of the open return |
-| `taxme_goto_section` | `name` (string) | click a menu section by name (substring); returns its fields |
+| `taxme_goto_section` | `name` (string) | click a menu section by name (substring); returns its fields — cut at 60 like `taxme_get_fields`, and saying so with `truncated`/`total` |
 | `taxme_get_fields` | `limit` (number) | interactive fields on the current page (`id`, `type`, `value`, `label`, `context`, `name` for a radio — the group, i.e. the one question, its button belongs to — and `locked` when the portal has switched the field off); long forms are cut at `limit` (default 60) and the reply says how many were left out |
 | `taxme_snapshot` | `screenshot` (bool) | breadcrumb + url of the current page; `screenshot: true` writes a PNG and returns its path |
-| `taxme_fill` | `values: [{target, value}]` | set fields — `target` = field `id` **or** a label/context substring; `value` must be text, a number or `true`/`false`; text→typed, radio→option value or label, checkbox→`true`/`false` (`ja`/`nein`, `1`/`0`, `on`/`off` are understood too) |
+| `taxme_fill` | `values: [{target, value}]` | set fields — `target` = field `id` **or** a label/context substring; `value` must be text, a number or `true`/`false`; text→typed, radio→option value or label, checkbox→`true`/`false` (`ja`/`nein`, `1`/`0`, `on`/`off` are understood too). `fields_after` is cut at 60 too, and says so |
 | `taxme_click` | `label` (string) | click a button/link by visible text (*Neuen Eintrag erfassen*, *Speichern*, *Nächste Seite*, *Vorherige Seite*, *Ändern* …); an exact label wins, a substring is the fallback, and `clicked` names the button that was actually pressed |
 | `taxme_results` | — | read the *Ergebnisse* / Steuerberechnung of the open return |
 
@@ -192,7 +192,7 @@ their own MCP config.
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
-| `taxme_submit_return` | `confirm` (bool) | **⚠️ DANGER — irreversible final submission** (*Abschluss → Steuererklärung einreichen*). Without `confirm: true` it only opens the *Abschluss* page and returns a **dry-run**; **nothing is submitted**. Only `confirm: true` actually files the return. |
+| `taxme_submit_return` | `confirm` (bool) | **⚠️ DANGER — irreversible final submission** (*Abschluss → Steuererklärung einreichen*). Without `confirm: true` it only opens the *Abschluss* page and returns a **dry-run** naming in `would_click` the one button a confirmed call would press; **nothing is submitted**. Reaching that page is a precondition — with no submit button on it the call is refused instead of pressing whatever the current page offers. Only `confirm: true` actually files the return. |
 
 A typical edit session: `taxme_login` → `taxme_list_returns` →
 `taxme_open_return {year}` → `taxme_goto_section {name}` → `taxme_get_fields` →

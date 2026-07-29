@@ -57,6 +57,8 @@ describe('the submit gate', () => {
     // The dry run is only useful if it shows what the real call would press.
     assert.ok(data.buttons.some(b => b.id === 'form:abschluss:einreichen'),
       `the submit button is not in the dry run: ${JSON.stringify(data.buttons)}`);
+    assert.equal(data.would_click, 'Steuererklärung einreichen',
+      `the dry run has to name the one button a confirmed call would press: ${JSON.stringify(data.would_click)}`);
     assert.ok(existsSync(data.screenshot), 'a dry run leaves a screenshot to look at');
     rmSync(data.screenshot, { force: true });
   });
@@ -78,6 +80,33 @@ describe('the submit gate', () => {
       rmSync(data.screenshot, { force: true });
     });
   }
+
+  test('a page the portal never left is not the Abschluss page', SLOW, async () => {
+    // TaxMe refuses to open Abschluss while the form still has errors: the
+    // click lands, and the section you were on comes back with a banner. The
+    // check written to catch that tested the page text for the word
+    // "Abschluss" — which is a menu entry, and the menu is on every page of
+    // the return, so it passed wherever the click had ended up and could not
+    // fail at all. The dry run then announced "Abschluss-Seite geöffnet" over
+    // a breadcrumb reading "Einkünfte" and handed back that page's "Speichern"
+    // as the button a confirmed call would press.
+    await portal.control({ abschlussBlocked: true });
+    const dry = await call('taxme_submit_return');
+    // And with the confirmation given, which is the case that matters: there
+    // is nothing on this page to press, and nothing may be pressed.
+    const { data } = await call('taxme_submit_return', { confirm: true });
+    // Put the portal back before asserting, so a failure here fails alone
+    // instead of leaving every later test locked out of the Abschluss page.
+    await portal.control({ abschlussBlocked: false });
+    assert.equal(dry.data.dry_run, undefined,
+      `another page was called the Abschluss page: ${JSON.stringify(dry.data).slice(0, 240)}`);
+    assert.equal(dry.data.submitted, false);
+    assert.match(dry.data.error, /Abschluss-Seite ist nicht offen/);
+    assert.equal(data.submitted, false, JSON.stringify(data).slice(0, 240));
+    assert.deepEqual(portal.state.submitted, [], 'a submission reached the portal');
+    assert.deepEqual(portal.state.clicks, [], 'something on the wrong page was pressed');
+    if (data.screenshot) rmSync(data.screenshot, { force: true });
+  });
 
   // Last, because it is the only test here that is allowed to submit — and
   // because without it the assertions above would pass against a fixture that

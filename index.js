@@ -381,6 +381,24 @@ async function readFields(p, limit = 60) {
   return limit === null ? all : all.slice(0, limit);
 }
 
+// A field list for a tool result: cut to a readable length, and SAYING SO.
+// taxme_get_fields learned to report the cut, but the three tools that hand the
+// page back after acting on it — goto_section, fill, click — kept slicing in
+// silence, and they are the ones a caller reads to check what just happened. A
+// Wertschriftenverzeichnis holds well over sixty boxes, so sixty of them came
+// back looking like the whole form, and `fields_after` did not contain the very
+// box the fill had just written to: a successful fill that reads like one that
+// never landed. The cut says how much is missing and where to get it.
+async function fieldList(p, key = 'fields', limit = 60) {
+  const all = await readFields(p, null);
+  return {
+    [key]: all.slice(0, limit),
+    ...(all.length > limit
+      ? { truncated: all.length - limit, total: all.length, hint: 'pass limit to taxme_get_fields to see more; taxme_fill resolves against all of them regardless' }
+      : {}),
+  };
+}
+
 // Where we are, with nothing that could be replayed. An AGOV/OIDC step carries
 // the authorisation code, the state and a session id in its query string, and a
 // JSF portal is fond of ;jsessionid= in the path. A snapshot goes straight into
@@ -530,8 +548,16 @@ async function fillOne(p, target, value) {
     const group = all.filter(x => x.type === 'radio' && sameRadioGroup(x, f));
     // No fallback to the resolved field: an unknown value used to select
     // whichever radio the lookup happened to land on and call it a success.
+    //
+    // And a label the widget does not have is no label to match against. The
+    // JSF radios here carry no <label for> — that is the whole reason setChoice
+    // has a fallback — so readFields reports label:"" for every one of them,
+    // and an empty value then matched the first button of the group and set it:
+    // a confession answered as evangelisch-reformiert, the change event fired
+    // at the portal, ok:true reported back, and nobody had asked for any of it.
+    const want = String(value).toLowerCase();
     const pick = group.find(x => x.value.endsWith(':' + value))
-      || group.find(x => x.label.toLowerCase() === String(value).toLowerCase());
+      || group.find(x => x.label && x.label.toLowerCase() === want);
     if (!pick) {
       return {
         target, ok: false,
@@ -639,13 +665,13 @@ const TOOLS = [
   { name: 'taxme_list_returns', description: 'Tax returns with status.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab. Only status "ok" means the return is open: the page is checked against the year that was asked for, so a login page or another case comes back as login_required / not_open / wrong_year instead.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
   { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, name for a radio — the group, i.e. the one question, its button belongs to — and locked when the portal has switched the field off; a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
   { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
+  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
 const server = new Server({ name: PKG.name, version: PKG.version }, { capabilities: { tools: {} } });
@@ -780,12 +806,8 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
     if (name === 'taxme_get_fields') {
       // Say so when the list was cut, rather than presenting sixty of ninety
       // fields as if that were the form.
-      const all = await readFields(await page(), null);
       const limit = Number.isInteger(args.limit) && args.limit > 0 ? args.limit : 60;
-      return text({
-        fields: all.slice(0, limit),
-        ...(all.length > limit ? { truncated: all.length - limit, total: all.length, hint: 'pass limit to see more; taxme_fill resolves against all of them regardless' } : {}),
-      });
+      return text(await fieldList(await page(), 'fields', limit));
     }
     if (name === 'taxme_snapshot') return text(await snapshot(await page(), args.screenshot));
 
@@ -797,7 +819,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       await el.click({ timeout: 10000 });
       await p.waitForTimeout(5000); await p.waitForLoadState('domcontentloaded').catch(() => {});
       await saveState();
-      return text({ breadcrumb: (await snapshot(p)).breadcrumb, fields: await readFields(p) });
+      return text({ breadcrumb: (await snapshot(p)).breadcrumb, ...(await fieldList(p)) });
     }
     if (name === 'taxme_fill') {
       if (!Array.isArray(args.values)) return text({ error: 'values muss eine Liste von {target, value} sein' });
@@ -827,9 +849,9 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         await p.waitForTimeout(600);
       }
       await saveState();
-      return text({ results, fields_after: await readFields(p) });
+      return text({ results, ...(await fieldList(p, 'fields_after')) });
     }
-    if (name === 'taxme_click') { const p = await page(); const r = await clickByText(p, args.label); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, fields: await readFields(p) }); }
+    if (name === 'taxme_click') { const p = await page(); const r = await clickByText(p, args.label); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, ...(await fieldList(p)) }); }
     if (name === 'taxme_results') {
       const p = await page();
       // The click used to be optional and its failure swallowed, after which
@@ -891,24 +913,42 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         return text({ submitted: false, error: `"Abschluss" liess sich nicht öffnen: ${e.message.split('\n')[0].slice(0, 120)}` });
       }
       await p.waitForTimeout(6000);
-      // And confirm we are actually there before looking for the button.
-      const onAbschluss = /Abschluss/i.test(await p.innerText('body').catch(() => ''));
-      if (!onAbschluss) {
-        return text({ submitted: false, error: 'Nach dem Klick ist die Abschluss-Seite nicht offen — es wurde nichts eingereicht', ...(await snapshot(p, false)) });
-      }
-      const snap = await snapshot(p, args.confirm !== true);
-      if (args.confirm !== true) {
-        return text({ dry_run: true, message: 'Nicht eingereicht. Abschluss-Seite geöffnet. Zum tatsächlichen Einreichen taxme_submit_return mit confirm:true aufrufen.', ...snap, buttons: (await readFields(p)).filter(f => /submit|button/.test(f.type)) });
-      }
-      // real submit: click the final "einreichen/freigeben" button
-      let clicked = null;
+      // And confirm we are actually there. Testing the page text for the word
+      // "Abschluss" did not do that: it is a menu entry, the menu is on every
+      // page of the return, and the entry had just been found there — so the
+      // check passed wherever the click had ended up, and could not fail at
+      // all. TaxMe refuses to open Abschluss while the form still has errors:
+      // the click lands, the section you were on comes back with a banner, and
+      // the dry run then announced "Abschluss-Seite geöffnet" over a breadcrumb
+      // reading "Einkünfte" and offered that page's "Speichern" as the button a
+      // confirmed call would press.
+      //
+      // The submission control is the evidence, and the only evidence worth
+      // anything here: the thing the real call presses is what says we are on
+      // the page that has it. So it is looked for first, before a word is said
+      // about the page — for the dry run too, which exists to show what would
+      // be pressed and can only do that once it knows.
+      let submit = null, wanted = null;
       for (const label of ['Steuererklärung einreichen', 'Einreichen', 'Definitiv freigeben', 'Freigeben']) {
         const b = await byText(p, label, true);
-        if (b) { await b.click(); clicked = label; break; }
+        if (b) { submit = b; wanted = label; break; }
       }
-      if (!clicked) {
-        return text({ submitted: false, error: 'Kein Einreiche-Button auf der Abschluss-Seite gefunden', ...(await snapshot(p, true)) });
+      if (!submit) {
+        return text({
+          submitted: false,
+          error: 'Kein Einreiche-Button auf der Seite — die Abschluss-Seite ist nicht offen (oder die Steuererklärung ist bereits eingereicht); es wurde nichts eingereicht',
+          ...(await snapshot(p, args.confirm === true)),
+        });
       }
+      // What the button really says, read before a click can take the page
+      // away. The search falls back to a substring, so the label that was
+      // looked for is not necessarily the one written on the button.
+      const clicked = (await submit.evaluate(e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || wanted;
+      const snap = await snapshot(p, args.confirm !== true);
+      if (args.confirm !== true) {
+        return text({ dry_run: true, message: 'Nicht eingereicht. Abschluss-Seite geöffnet. Zum tatsächlichen Einreichen taxme_submit_return mit confirm:true aufrufen.', would_click: clicked, ...snap, buttons: (await readFields(p)).filter(f => /submit|button/.test(f.type)) });
+      }
+      await submit.click();
       await p.waitForTimeout(6000);
       // A click is not a submission. The portal can reject the return for its
       // own reasons — validation, an expired session — and this reported
