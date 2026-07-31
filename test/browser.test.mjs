@@ -950,6 +950,36 @@ describe('snapshot and results', () => {
     assert.match(back.data.text ?? '', /4['’]321\.00/, 'and the real calculation is still read');
   });
 
+  test('and neither is one whose breadcrumb the menu does not recognise', SLOW, async () => {
+    // The landing check that settles this rests on the breadcrumb naming an
+    // entry of the menu, and a breadcrumb naming none settles nothing — which
+    // is deliberate, because this portal shortens labels and writes words that
+    // are no menu entry at all, and refusing a navigation that worked is the
+    // worse failure. So the refusal above is only caught while the portal
+    // co-operates by naming, in a breadcrumb, the page it left you on. Give it
+    // the same refusal under a breadcrumb reading "Übersicht" and the whole
+    // thing came back exactly as before the check existed: the portal's own
+    // "die Ergebnisse lassen sich erst danach berechnen" as line one of `text`,
+    // the overview page's Total Bruttoertrag underneath it as the tax bill, no
+    // error and no breadcrumb to see it by. The anchor is what has to hold
+    // here: a heading names its section, and a sentence that mentions the
+    // section is not one.
+    await portal.control({ ergebnisseBlocked: true, crumbLabel: 'Übersicht' });
+    const blind = await srv.call('taxme_results');
+    // Both flips undone before a word is asserted, or a failure here leaves
+    // every later test reading a page the portal does not really serve.
+    await portal.control({ ergebnisseBlocked: false, crumbLabel: null });
+    assert.equal(blind.data.text, undefined,
+      `a refusal banner came back as the calculation: ${JSON.stringify(blind.data).slice(0, 300)}`);
+    assert.match(blind.data.error ?? '', /nicht geöffnet/,
+      `and it has to say the section was never opened: ${JSON.stringify(blind.data).slice(0, 300)}`);
+    assert.ok(!/1['’]234\.00/.test(JSON.stringify(blind.data)),
+      'and the other page\'s total must not be in the answer at all');
+
+    const back = await srv.call('taxme_results');
+    assert.match(back.data.text ?? '', /4['’]321\.00/, 'and the real calculation is still read');
+  });
+
   test('a click that landed on the login form is not a return with no calculation', SLOW, async () => {
     // The other end of the same click. taxme_goto_section was taught last round
     // that a page carrying no menu is no return at all — the menu entry links
