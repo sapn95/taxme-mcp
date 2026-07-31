@@ -310,6 +310,28 @@ describe('opening a return', () => {
     assert.ok(none.data.total > 60);
   });
 
+  test('a breadcrumb that names the way you came is read to its end', SLOW, async () => {
+    // The check that replaced the substring test asked for the LONGEST menu
+    // entry the breadcrumb contains anywhere, which reads a path as a bag of
+    // words. A breadcrumb IS a path — that is what the "TaxMe 2025 >" in front
+    // of every one of them is — and a portal that names the section you came
+    // through as well as the one you are on hands this two entries to choose
+    // between. It chose the longer, which on any path is likelier to be the
+    // ancestor than the page: Einkünfte opened perfectly well, and the tool
+    // answered that the portal was still showing another page and had changed
+    // nothing. Refusing a navigation that worked is the worse failure of the
+    // two, by the same check's own reckoning.
+    await portal.control({ crumbLabel: 'Wertschriftenverzeichnis > Einkünfte' });
+    const path = await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    // Undone before a word is asserted, or a failure here leaves every later
+    // test reading a breadcrumb the portal does not really write.
+    await portal.control({ crumbLabel: null });
+    assert.equal(path.data.error, undefined,
+      `a navigation that worked was refused over the path it took: ${JSON.stringify(path.data).slice(0, 300)}`);
+    assert.ok(path.data.fields?.some(f => f.id === 'form:eink:0:betrag'),
+      `and it really is the Einkünfte page: ${JSON.stringify(path.data).slice(0, 300)}`);
+  });
+
   test('opening a second return moves the tools onto it, not back to the first', SLOW, async () => {
     // The tools used to work on "the first edit tab there is" rather than on the
     // one that was opened. Against this fixture that happens to pick the right
@@ -653,9 +675,60 @@ describe('filling the form', () => {
 
   test('picks a dropdown option by value and by visible label', SLOW, async () => {
     const byValue = await srv.call('taxme_fill', { values: [{ target: 'Gemeinde', value: '351' }] });
+    assert.equal(byValue.data.results[0].ok, true, JSON.stringify(byValue.data.results[0]));
     assert.equal(byValue.data.results[0].value, '351', JSON.stringify(byValue.data.results[0]));
     const byLabel = await srv.call('taxme_fill', { values: [{ target: 'Gemeinde', value: 'Köniz' }] });
+    assert.equal(byLabel.data.results[0].ok, true, JSON.stringify(byLabel.data.results[0]));
     assert.equal(byLabel.data.results[0].value, '371');
+  });
+
+  test('an option a dropdown does not have is refused with the ones it does', SLOW, async () => {
+    // The radio group answers this in half a second and names what is on
+    // offer. The dropdown handed the value to Playwright as an option value
+    // and then, when that failed, as a visible label — and for selectOption
+    // "failed" means waiting out the default timeout for an option that will
+    // never appear. Sixty seconds for a value the list does not have, and a
+    // raw Playwright call log where the radio has a sentence; thirty of those
+    // seconds for an option named by the text on it, which taxme_get_fields
+    // shows and taxme_fill invites, and which then worked. taxme_fill goes
+    // through its batch one item at a time, so a few of these outlast the
+    // client's own request timeout while the browser is still being driven.
+    const started = Date.now();
+    const { data } = await srv.call('taxme_fill', { values: [{ target: 'Gemeinde', value: 'Thun' }] });
+    assert.equal(data.results[0].ok, false, JSON.stringify(data.results[0]).slice(0, 300));
+    assert.match(data.results[0].error, /gibt es in dieser Liste nicht/,
+      `a Playwright timeout came back as the answer: ${JSON.stringify(data.results[0]).slice(0, 300)}`);
+    assert.ok(data.results[0].options?.some(o => o.label === 'Köniz'),
+      `and it says what is on offer: ${JSON.stringify(data.results[0]).slice(0, 300)}`);
+    // Twenty seconds is far under the two timeouts this used to sit through
+    // and far over anything the fixture needs, so it fails on the wait and not
+    // on a loaded machine.
+    assert.ok(Date.now() - started < 20000, `it waited ${Date.now() - started} ms out for an option that is not there`);
+  });
+
+  test('a dropdown the portal hands back unchanged is not reported as chosen', SLOW, async () => {
+    // The radio above was called the last fill path that claimed success
+    // without looking, and the round that fixed it counted checkbox, text and
+    // select as the three that "each read back". The select read back and
+    // never compared: only a readback that THREW was a failure, and whatever
+    // the widget returned went into the reply's own `value` field beside
+    // ok:true, where it reads as the portal confirming the choice rather than
+    // contradicting it. A JSF select is re-rendered by the server exactly as a
+    // JSF radio group is, and this one comes back the way it was — the option
+    // was picked, the change fired, the box is empty again — so the answer was
+    // "ok:true, value: ''", which is a tariff nobody chose reported as chosen.
+    const byValue = await srv.call('taxme_fill', { values: [{ target: 'Quellensteuertarif', value: 'A0' }] });
+    assert.equal(byValue.data.fields_after.find(f => f.id === 'form:pers:tarif').value, '',
+      'the fixture is supposed to drop the choice — otherwise this proves nothing');
+    assert.equal(byValue.data.results[0].ok, false,
+      `a choice that did not stick was reported as made: ${JSON.stringify(byValue.data.results[0])}`);
+    assert.match(byValue.data.results[0].error, /blieb nicht stehen/);
+    // And the same the other way in, because a caller may name the option by
+    // the text on it and must not be failed for that instead.
+    const byLabel = await srv.call('taxme_fill', { values: [{ target: 'Quellensteuertarif', value: 'Tarif B1' }] });
+    assert.equal(byLabel.data.results[0].ok, false,
+      `${JSON.stringify(byLabel.data.results[0])}`);
+    assert.match(byLabel.data.results[0].error, /blieb nicht stehen/);
   });
 
   test('types into a text field addressed by its id', SLOW, async () => {
@@ -731,6 +804,31 @@ describe('clicking', () => {
     assert.match(raw, /kein klickbares Element/);
     assert.equal(portal.state.clicks.length, before, 'nothing was clicked');
   });
+
+  test('a label that names nothing is not a licence to press the first thing there is', SLOW, async () => {
+    // The last resort of the lookup is `:has-text("…")`, and `:has-text("")`
+    // is true of every element on the page — so an empty or blank label did
+    // not match nothing, it matched EVERYTHING, and the first hit was clicked.
+    // taxme_click pressed whichever button or link comes first in the DOM and
+    // reported it as the one that had been asked for; taxme_goto_section took
+    // the open form to the first menu entry — unsaved values and all, which is
+    // the very thing readingPage exists to prevent — and came back
+    // `section: "Personalien"` with no error at all. taxme_fill has refused a
+    // blank target since the round that found it writing "undefined" into a
+    // tax return; the two tools that CLICK rather than fill had not been told.
+    const where = await srv.call('taxme_snapshot');
+    const before = portal.state.clicks.length;
+    const blank = await srv.call('taxme_click', { label: '' });
+    const spaces = await srv.call('taxme_goto_section', { name: '   ' });
+    const after = await srv.call('taxme_snapshot');
+    assert.equal(blank.isError, true, `an empty label pressed something: ${blank.raw.slice(0, 300)}`);
+    assert.match(spaces.data.error ?? '', /nicht gefunden/,
+      `a blank name opened a section nobody named: ${JSON.stringify(spaces.data).slice(0, 300)}`);
+    assert.equal(spaces.data.fields, undefined, 'and hands back no page as that section');
+    assert.equal(portal.state.clicks.length, before, 'nothing was clicked');
+    assert.equal(after.data.breadcrumb, where.data.breadcrumb,
+      `the browser was navigated away on an argument that named nothing: ${after.data.breadcrumb}`);
+  });
 });
 
 describe('snapshot and results', () => {
@@ -796,6 +894,35 @@ describe('snapshot and results', () => {
 
     const back = await srv.call('taxme_results');
     assert.match(back.data.text ?? '', /4['’]321\.00/, 'and the real calculation is still read');
+  });
+
+  test('a click that landed on the login form is not a return with no calculation', SLOW, async () => {
+    // The other end of the same click. taxme_goto_section was taught last round
+    // that a page carrying no menu is no return at all — the menu entry links
+    // to the edit view, a session that died in the meantime gets bounced to
+    // AGOV, and that form has neither menu nor breadcrumb. This tool asks the
+    // same question of the same page one line further on and asked it smaller:
+    // "is the word Ergebnisse anywhere on this page". On the login form it is
+    // not, so the answer was "die Seite nach dem Klick enthält keine
+    // Ergebnisse" — which is what a return the portal has not computed yet
+    // looks like, a real state of this portal with its own message — over an
+    // empty breadcrumb and without even the url of where the browser had gone.
+    // An empty answer read off a page that was never asked the question.
+    await portal.control({ editLoggedOut: true });
+    const gone = await srv.call('taxme_results');
+    const asMenu = await srv.call('taxme_menu');
+    await portal.control({ editLoggedOut: false });
+    // Back onto the return before asserting: this test leaves the edit tab on
+    // the login form, and a failure here would otherwise hand every later test
+    // in the file a page with no tax return on it.
+    const reopened = await srv.call('taxme_open_return', { year: 2025 });
+    assert.equal(gone.data.text, undefined, JSON.stringify(gone.data).slice(0, 300));
+    assert.match(gone.data.error ?? '', /kein Menü/,
+      `a dead session came back as a page with no calculation on it: ${JSON.stringify(gone.data).slice(0, 300)}`);
+    assert.ok(gone.data.url, 'and it says where the browser actually is');
+    assert.match(asMenu.data.error ?? '', /kein Menü/,
+      'the two tools have to say the same thing about the same page');
+    assert.equal(reopened.data.status, 'ok', JSON.stringify(reopened.data));
   });
 });
 

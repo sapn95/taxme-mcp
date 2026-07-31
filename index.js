@@ -683,14 +683,58 @@ async function fillOne(p, target, value) {
   // selector — the attribute form is the only one that works here.
   const loc = p.locator(`[id="${f.id}"]`);
   if (f.tag === 'select') {
-    // A dropdown cannot be typed into; accept either the option value or its
-    // visible label, because a caller reading taxme_get_fields sees both.
-    await loc.selectOption({ value: String(value) }).catch(() => loc.selectOption({ label: String(value) }));
-    const chosen = await loc.inputValue().catch(() => null);
-    // A readback that failed is not proof the value went in. Reporting ok on it
-    // is the same mistake as reporting a submission because a button was hit.
+    // What the dropdown offers, asked BEFORE anything is chosen — the same
+    // question the radio group is asked one branch up, and for the same two
+    // reasons. It answers what an unknown value should be answered with, and
+    // it names the option to pick so the pick itself cannot miss.
+    //
+    // Neither was done here. A dropdown cannot be typed into, so the value was
+    // handed to Playwright as an option value and, when that failed, as a
+    // visible label — and "failed" for `selectOption` means waiting the full
+    // default timeout for an option that is never going to appear. A value the
+    // list does not have cost sixty seconds and came back as a raw Playwright
+    // call log where the radio answers `Wert "geschieden" gibt es in dieser
+    // Gruppe nicht` in half a second with the options that do exist; naming an
+    // option by the text on it — which taxme_get_fields shows and this tool
+    // invites — cost thirty seconds of that for a fill that then worked. A
+    // batch is filled one item after another, so a handful of those outlives
+    // the client's own request timeout while the browser is still being driven.
+    const options = await loc.evaluate(e => [...e.options].map(
+      o => ({ value: o.value, label: (o.textContent || '').replace(/\s+/g, ' ').trim() }))).catch(() => null);
+    if (!options) return { target, ok: false, error: 'Die Auswahlliste liess sich nicht lesen', selected: f.id };
+    const asked = String(value);
+    // Value first, then the visible label — the radio's order, so that a list
+    // whose option values are also somebody's labels resolves the same way in
+    // both places.
+    const pick = options.find(o => o.value === asked) || options.find(o => o.label === asked);
+    if (!pick) return { target, ok: false, error: `Wert "${value}" gibt es in dieser Liste nicht`, selected: f.id, options };
+    await loc.selectOption({ value: pick.value });
+    // And read back what the widget HOLDS, then compare. Reading it back was
+    // as far as this went: only a readback that THREW counted as a failure,
+    // and whatever it returned was reported in the reply's own `value` field
+    // beside ok:true, where it reads as the portal confirming the choice
+    // rather than contradicting it.
+    //
+    // That is the radio's mistake in the one field type left holding it. A JSF
+    // select is re-rendered by the server exactly as a JSF radio group is, and
+    // it can come back the way it was: the option was picked, the change
+    // fired, and the widget is empty again. The round that taught the radio to
+    // look counted checkbox, text and select as the three that already did —
+    // and of those three the select was the one that looked without comparing.
+    const chosen = await loc.evaluate(e => {
+      const o = e.selectedOptions?.[0];
+      return o ? { value: o.value, label: (o.textContent || '').replace(/\s+/g, ' ').trim() } : { value: '', label: '' };
+    }).catch(() => null);
     if (chosen === null) return { target, ok: false, error: 'Wert liess sich nach dem Setzen nicht zurücklesen', selected: f.id };
-    return { target, ok: true, selected: f.id, value: chosen };
+    if (chosen.value !== pick.value) {
+      return {
+        target, ok: false, selected: f.id, value: chosen.value,
+        error: chosen.value || chosen.label
+          ? `Die Auswahl "${value}" blieb nicht stehen — das Feld zeigt "${chosen.label || chosen.value}"; das Portal hat die Antwort nicht übernommen`
+          : `Die Auswahl "${value}" blieb nicht stehen — das Feld ist wieder leer; das Portal hat die Antwort nicht übernommen`,
+      };
+    }
+    return { target, ok: true, selected: f.id, value: chosen.value };
   }
   // Nothing here fills a password. taxme_login is the only thing that should
   // ever touch one, and it hands the keyboard to the human; a fill against a
@@ -722,6 +766,18 @@ const rxExact = s => new RegExp(`^\\s*${String(s).replace(/[.*+?^${}()|[\]\\]/g,
 // "Wertschriften" / "Wertschriftenverzeichnis" — and `:has-text()` matches
 // substrings, so simply taking the first hit clicks the wrong thing.
 async function byText(p, label, withInputs = false) {
+  // A name that names nothing matches everything. The last resort below is
+  // `:has-text("…")`, and `:has-text("")` is true of every element on the page,
+  // so an empty or blank label resolved to whichever link or button happened to
+  // come first in the DOM and every caller then acted on it as if it had been
+  // asked for: taxme_goto_section navigated the open form to the first menu
+  // entry — unsaved values and all, which is the very thing readingPage exists
+  // to avoid — and reported it back as `section: "Personalien"`, and
+  // taxme_click pressed the first button there is. That is resolveField's
+  // "took the first quietly" mistake on the path that clicks rather than fills,
+  // and taxme_fill already refuses a blank target outright. Nothing is found
+  // for a name nobody gave, and the callers say so in their own words.
+  if (!String(label ?? '').trim()) return null;
   const v = cssStr(label);
   const tries = [p.locator('a, button').filter({ hasText: rxExact(label) })];
   if (withInputs) tries.push(p.locator(`input[type=submit][value="${v}"], input[type=button][value="${v}"]`));
@@ -763,13 +819,13 @@ const TOOLS = [
   { name: 'taxme_list_returns', description: 'Tax returns with status. An empty list is only reported when the case list itself is on the page: a page that is not one — a maintenance notice, an error page — and a list whose rows could not be read are both status "unparsable", because "there is nothing to file" must not be concluded from a page that was never asked the question.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_open_return', description: 'Open a tax return (year) for editing; returns the menu sections. Handles the edit popup tab. Only status "ok" means the return is open: the page is checked against the year that was asked for, so a login page or another case comes back as login_required / not_open / wrong_year instead.', inputSchema: { type: 'object', properties: { year: { type: 'number' } }, required: ['year'] } },
   { name: 'taxme_menu', description: 'Left-menu sections of the open return with their status. A page carrying no such menu is no return: that comes back as an error naming where the browser is, not as an empty list of sections.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total. Landing there is checked: TaxMe refuses to open a section while the form still has errors, and the page it hands back instead comes back as an error naming the section you are really on — not as that section\'s fields under the name you asked for. Which section that is is decided by the menu entry the breadcrumb names, not by the name appearing somewhere in it, because these names nest ("Wertschriften" inside "Wertschriftenverzeichnis"). A page carrying no menu is no return at all — an expired session lands on the login form — and comes back as an error saying so.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'taxme_goto_section', description: 'Click a menu section by name (substring) in the open return; returns the fields on that page, cut at 60 like taxme_get_fields and saying so with truncated/total. Landing there is checked: TaxMe refuses to open a section while the form still has errors, and the page it hands back instead comes back as an error naming the section you are really on — not as that section\'s fields under the name you asked for. Which section that is is decided by the menu entry the breadcrumb names, not by the name appearing somewhere in it, because these names nest ("Wertschriften" inside "Wertschriftenverzeichnis"). A breadcrumb is a path and the page is the end of it, so the entry it names is the last one written into it. A page carrying no menu is no return at all — an expired session lands on the login form — and comes back as an error saying so.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, name for a radio — the group, i.e. the one question, its button belongs to — and locked when the portal has switched the field off; a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
-  { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an unknown radio option, and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards — a radio the portal hands back unanswered comes back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
-  { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
-  { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition: "Ergebnisse" is a left-menu entry on every page of the return, so the calculation is read from a heading the menu entry cannot be, and a portal that refused to open the section comes back as an error naming the page you are on instead of that page\'s text.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click. A page whose text could not be read at all (page_unreadable) is refused for the same reason one step further back: a read that failed is not a page that said no. In both cases the submit button is named as not_clicked rather than would_click, because nothing would be pressed.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
+  { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an option neither a radio group nor a dropdown has (the reply lists the ones it does), and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards and compared with what was asked for — a radio the portal hands back unanswered, and a dropdown it hands back on another option or on none, come back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
+  { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed. An empty or blank label is refused rather than resolved — an empty substring matches every element on the page, so it would press whichever button comes first.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
+  { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition: "Ergebnisse" is a left-menu entry on every page of the return, so the calculation is read from a heading the menu entry cannot be, and a portal that refused to open the section comes back as an error naming the page you are on instead of that page\'s text. A click that landed on a page with no menu at all — an expired session lands on the login form — is reported as no return being open, not as a page carrying no calculation.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click. A page whose text could not be read at all (page_unreadable) is refused for the same reason one step further back: a read that failed is not a page that said no. In both cases the submit button is named as not_clicked rather than would_click, because nothing would be pressed. And a page carrying no menu at all is no return — an expired session lands on the login form — which is said in those words rather than as the Abschluss page merely not being open.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
 const server = new Server({ name: PKG.name, version: PKG.version }, { capabilities: { tools: {} } });
@@ -1020,25 +1076,46 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // the one menu pair the fixture exists to model.
       //
       // The evidence is which entry the breadcrumb names, so that is what is
-      // read: the LONGEST menu entry the breadcrumb contains, since a longer
-      // name that fits also contains every shorter one nested inside it.
+      // read. A breadcrumb is a PATH and the page it describes is the end of
+      // it, so the entry it names is the LAST one written into it; where two
+      // entries begin at the same place it is the longer of them, since a
+      // longer name that fits also contains every shorter one nested inside it.
+      //
+      // Taking the longest match anywhere in the line was the first attempt at
+      // that, and it reads a path as a bag of words: on "TaxMe 2025 >
+      // Wertschriftenverzeichnis > Einkünfte" — a portal naming the section you
+      // came through as well as the one you are on — the longest entry is the
+      // ancestor, so an Einkünfte that had opened perfectly well was reported
+      // as "the portal is still showing another page" and the navigation that
+      // worked was refused. By this check's own reckoning, two paragraphs down,
+      // that is the worse failure of the two.
       const here = (crumb || '').toLowerCase();
       const want = wanted.toLowerCase();
-      let landed = '';
+      let landed = '', at = -1;
       for (const m of menu) {
         const s = m.section.toLowerCase();
-        if (s && here.includes(s) && s.length > landed.length) landed = s;
+        if (!s) continue;
+        const i = here.lastIndexOf(s);
+        if (i < 0) continue;
+        if (i > at || (i === at && s.length > landed.length)) { at = i; landed = s; }
       }
       // A breadcrumb that names no entry of this menu settles nothing, and
-      // nothing is claimed from it. Nor does a breadcrumb that names a SHORTER
-      // entry than the one we clicked: a breadcrumb is free to shorten a label
-      // and this portal's short forms are menu entries in their own right, so
-      // that reading is ambiguous — and the previous version of this check,
-      // whose commit message promised that a shortened label "cannot turn a
-      // working navigation into a refusal", refused exactly that case. Refusing
-      // a navigation that worked is the worse failure of the two. A breadcrumb
-      // naming a LONGER entry is not ambiguous: no breadcrumb lengthens a
-      // label, so that is a different page, and it is refused.
+      // nothing is claimed from it. Nor does one that names an entry the
+      // clicked label BEGINS WITH — a shortened form of the very name we
+      // clicked: a breadcrumb is free to shorten a label and this portal's
+      // short forms are menu entries in their own right, so that reading is
+      // ambiguous, and the version of this check before last refused exactly
+      // the case its own commit message promised it allowed. Refusing a
+      // navigation that worked is the worse failure of the two.
+      //
+      // Every other entry is a different page and is refused, whatever its
+      // length: a longer one because no breadcrumb lengthens a label, and an
+      // unrelated one — "Einkünfte" after a click on "Wertschriftenverzeichnis"
+      // — because the portal refusing to leave the page you were on is the
+      // whole reason this check exists, and that page's name is usually the
+      // shorter of the two. The rule is prefix, not length; this comment and
+      // the README said length, which would have waved through the refusal
+      // this was written to catch.
       if (landed && landed !== want && !want.startsWith(landed)) {
         return text({
           error: `Das Portal hat "${wanted}" nicht geöffnet — es zeigt weiterhin eine andere Seite; dort wurde nichts geändert`,
@@ -1128,13 +1205,27 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         break;
       }
       if (at < 0) {
-        const crumb = (await snapshot(p, false)).breadcrumb;
-        // Two different failures, and the page settles which: a page carrying
-        // the menu entry and nothing else is the return with the section not
-        // opened; a page carrying neither is not the return at all.
-        return text(body.includes('Ergebnisse')
-          ? { error: 'Das Portal hat "Ergebnisse" nicht geöffnet — die Seite führt den Menüpunkt, zeigt aber keine Berechnung; bitte im Portal prüfen', breadcrumb: crumb }
-          : { error: 'Die Seite nach dem Klick enthält keine Ergebnisse', breadcrumb: crumb });
+        // Two different failures, and the menu settles which — the same menu
+        // this tool already asks BEFORE the click, and the same one taxme_menu
+        // and taxme_goto_section ask about the page they land on. Asking the
+        // page text for the word "Ergebnisse" instead was the smaller question:
+        // it separated "the section did not open" from "there is nothing here
+        // called Ergebnisse", and the second of those is what a dead session
+        // looks like from here. The menu entry is a link to the edit view, the
+        // portal bounces it to AGOV, and the AGOV form carries no such word —
+        // so a caller who asked for the tax bill was told "die Seite nach dem
+        // Klick enthält keine Ergebnisse", over an empty breadcrumb and without
+        // even the url of where the browser had ended up. That reads as "the
+        // portal has not computed anything", which is a real state of this
+        // portal and has its own message two checks further down: an empty
+        // answer read off a page that was never asked the question, the mistake
+        // the Kontoauszug, the case list and taxme_menu were each fixed for.
+        const menu = await readMenu(p);
+        if (!menu.length) return text(await noReturnHere(p, ' — die Steuerberechnung wurde nicht gelesen'));
+        return text({
+          error: 'Das Portal hat "Ergebnisse" nicht geöffnet — die Seite führt den Menüpunkt, zeigt aber keine Berechnung; bitte im Portal prüfen',
+          breadcrumb: (await snapshot(p, false)).breadcrumb,
+        });
       }
       const rest = lines.slice(at).join('\n');
       const slice = rest.slice(0, 1500);
@@ -1231,6 +1322,29 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const already = bodyBefore === null || SUBMITTED_RX.test(bodyBefore);
       const unreadable = bodyBefore === null;
       if (!submit) {
+        // Where the click landed, before a word is said about why there is no
+        // button on it. taxme_menu, taxme_goto_section and taxme_results each
+        // ask the menu about the page they end up on — the menu is on every
+        // page of a return and on no other, so a page carrying none is no
+        // return at all: the Abschluss entry links to the edit view, a session
+        // that died in the meantime is bounced to AGOV, and that form has
+        // neither menu nor button. The tool that offers an irreversible button
+        // was the last one still answering "die Abschluss-Seite ist nicht
+        // offen" about it, which is true of the page and describes the wrong
+        // problem: it is what the portal refusing to open Abschluss over a
+        // form error looks like, a real state of this portal, so a caller is
+        // sent to fix a form when what is needed is a fresh login.
+        //
+        // Only where the page settles nothing else. A page nobody could read
+        // stays page_unreadable — readMenu would fail on it for the same
+        // reason and prove nothing — and a page that reports the return as
+        // filed keeps that reading, because a portal is free to confirm a
+        // submission somewhere outside the return, and "no return is open" is
+        // the wrong thing to say about a page that just said the thing is in.
+        const menu = (unreadable || already) ? null : await readMenu(p).catch(() => null);
+        if (menu && !menu.length) {
+          return text({ submitted: false, ...(await noReturnHere(p, ' — es wurde nichts eingereicht')) });
+        }
         return text({
           submitted: false,
           ...(already && !unreadable ? { already_submitted: true } : {}),

@@ -108,6 +108,34 @@ describe('the submit gate', () => {
     if (data.screenshot) rmSync(data.screenshot, { force: true });
   });
 
+  test('a click that landed on the login form is not an Abschluss page we failed to reach', SLOW, async () => {
+    // The same page, the same question, the last tool still asking it small.
+    // The Abschluss entry links to the edit view; a session that died since
+    // the return was opened is bounced to AGOV, and that form has no menu, no
+    // breadcrumb and certainly no einreichen button. taxme_menu, then
+    // taxme_goto_section, then taxme_results were each taught that a page with
+    // no menu on it is no return at all — and the tool that hands a caller an
+    // irreversible button answered "die Abschluss-Seite ist nicht offen",
+    // which is exactly what the portal refusing Abschluss over a form error
+    // looks like and is tested for two tests above. A caller told that goes
+    // hunting for the error in the form; what it needs is taxme_login.
+    await portal.control({ editLoggedOut: true });
+    const dry = await call('taxme_submit_return');
+    const confirmed = await call('taxme_submit_return', { confirm: true });
+    await portal.control({ editLoggedOut: false });
+    // Back onto the return before asserting, or a failure here leaves every
+    // later test in this file driving the login form.
+    const reopened = await call('taxme_open_return', { year: 2025 });
+    assert.equal(dry.data.dry_run, undefined, JSON.stringify(dry.data).slice(0, 240));
+    assert.match(dry.data.error ?? '', /kein Menü/,
+      `a dead session came back as the Abschluss page not being open: ${JSON.stringify(dry.data).slice(0, 240)}`);
+    assert.ok(dry.data.url, 'and it says where the browser actually is');
+    assert.equal(confirmed.data.submitted, false, JSON.stringify(confirmed.data).slice(0, 240));
+    assert.match(confirmed.data.error ?? '', /kein Menü/, JSON.stringify(confirmed.data).slice(0, 240));
+    assert.deepEqual(portal.state.submitted, [], 'a submission reached the portal');
+    assert.equal(reopened.data.status, 'ok', JSON.stringify(reopened.data).slice(0, 240));
+  });
+
   // Last, because it is the only test here that is allowed to submit — and
   // because without it the assertions above would pass against a fixture that
   // simply cannot accept a submission.
