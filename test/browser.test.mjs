@@ -244,7 +244,7 @@ describe('opening a return', () => {
 
   test('the menu is readable from the open return', SLOW, async () => {
     const { data } = await srv.call('taxme_menu');
-    assert.equal(data.menu.length, 7);
+    assert.equal(data.menu.length, 8);
   });
 
   test('a section name that is a prefix of another one still lands correctly', SLOW, async () => {
@@ -330,6 +330,49 @@ describe('opening a return', () => {
       `a navigation that worked was refused over the path it took: ${JSON.stringify(path.data).slice(0, 300)}`);
     assert.ok(path.data.fields?.some(f => f.id === 'form:eink:0:betrag'),
       `and it really is the Einkünfte page: ${JSON.stringify(path.data).slice(0, 300)}`);
+  });
+
+  test('a section whose name ends with another one still opens', SLOW, async () => {
+    // German nests section names at both ends, and this menu only ever carried
+    // one of the two: "Wertschriften" at the FRONT of
+    // "Wertschriftenverzeichnis". A qualifier goes in front of its noun, so
+    // "Einkünfte" is the END of "Übrige Einkünfte" — and the rule that read the
+    // breadcrumb as a line and took the LAST entry named in it therefore picked
+    // the shorter, nested name off the breadcrumb of the longer page. A click
+    // on "Übrige Einkünfte" that the portal had opened perfectly well came back
+    // as "das Portal hat 'Übrige Einkünfte' nicht geöffnet", with the
+    // breadcrumb of that very page printed underneath as the evidence against
+    // it. Refusing a navigation that worked is the worse failure of the two, by
+    // this check's own reckoning.
+    const { data } = await srv.call('taxme_goto_section', { name: 'Übrige Einkünfte' });
+    assert.equal(data.error, undefined,
+      `a working navigation was refused over the name nested in its own breadcrumb: ${JSON.stringify(data).slice(0, 300)}`);
+    assert.equal(data.breadcrumb, 'TaxMe 2025 > Übrige Einkünfte');
+    assert.ok(data.fields?.some(f => f.id === 'form:ueb:0:betrag'),
+      `and it really is that page: ${JSON.stringify(data).slice(0, 300)}`);
+  });
+
+  test('a refusal that leaves you on the longer name is a refusal at either end', SLOW, async () => {
+    // The other half of the same inversion, and the dangerous one. The portal
+    // refuses to open Einkünfte and leaves the browser on Übrige Einkünfte;
+    // the last menu entry named in that breadcrumb is "Einkünfte", sitting at
+    // the end of it, so the check answered "yes, that is where we are" and
+    // handed the other page's boxes back as `section: "Einkünfte"` — the exact
+    // failure it was written to stop, surviving on the mirror image of the pair
+    // it was written against. A caller then fills a wage into an Alimente box.
+    await portal.control({ einkuenfteBlocked: true });
+    const blocked = await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    await portal.control({ einkuenfteBlocked: false });
+    // The way back first, so a failure here fails alone instead of stranding
+    // the rest of the file on a page it does not expect.
+    const back = await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    assert.equal(blocked.data.fields, undefined,
+      `the other page's fields came back as Einkünfte: ${JSON.stringify(blocked.data).slice(0, 300)}`);
+    assert.match(blocked.data.error ?? '', /nicht geöffnet/);
+    assert.equal(blocked.data.breadcrumb, 'TaxMe 2025 > Übrige Einkünfte',
+      'and where the browser really is');
+    assert.equal(back.data.section, 'Einkünfte', `and it still opens: ${JSON.stringify(back.data).slice(0, 200)}`);
+    assert.equal(back.data.error, undefined);
   });
 
   test('opening a second return moves the tools onto it, not back to the first', SLOW, async () => {
@@ -425,7 +468,7 @@ describe('opening a return', () => {
   test('a section that does not exist reports the menu instead of guessing', SLOW, async () => {
     const { data } = await srv.call('taxme_goto_section', { name: 'Kryptowährungen' });
     assert.match(data.error, /nicht gefunden/);
-    assert.equal(data.menu.length, 7);
+    assert.equal(data.menu.length, 8);
   });
 
   test('a section the portal refused to open is not handed back as that section', SLOW, async () => {
@@ -883,6 +926,17 @@ describe('snapshot and results', () => {
     // and handed that page back as the tax calculation. An overview page totals
     // things up, so the amount the check insists on was there too — the
     // portal's own error banner came back inside the "calculation".
+    //
+    // Telling the menu entry from a heading fixed that only for as long as no
+    // page but the results page ever writes the word in its content, and a
+    // refusal banner is one word of German away from doing so: a portal that
+    // will not compute anything until the form is right says which section it
+    // is refusing. The banner then IS the anchor, the overview's own total sits
+    // underneath it, and the refusal came back as `text` with no error at all —
+    // the failure the anchor rule was written to stop, wearing the sentence
+    // that announces it. So the landing is settled first, off the menu and the
+    // breadcrumb, exactly as taxme_goto_section settles a click on any other
+    // entry of the same menu.
     await portal.control({ ergebnisseBlocked: true });
     const { data } = await srv.call('taxme_results');
     await portal.control({ ergebnisseBlocked: false });
