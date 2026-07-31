@@ -151,6 +151,17 @@ const personalien = () => `
       <option value="351">Bern</option>
       <option value="371">Köniz</option>
     </select></td></tr>
+  <tr><td>Quellensteuertarif</td><td>
+    <!-- The dropdown counterpart of the "Vorsorge" radios above, and the same
+         thing the server does to them: the change is heard, the widget is
+         re-rendered as it was, and the choice is gone. A JSF select is no less
+         prone to that than a JSF radio group, and until this row existed
+         nothing here could tell whether the fill noticed. -->
+    <select id="form:pers:tarif" onchange="ev('tarif', this.value); this.selectedIndex = 0;">
+      <option value="">Bitte wählen</option>
+      <option value="A0">Tarif A0</option>
+      <option value="B1">Tarif B1</option>
+    </select></td></tr>
 </table>`;
 
 const einkuenfte = saved => `
