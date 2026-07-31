@@ -9,9 +9,11 @@
 //     valid CSS selector
 //   * amount fields take whole francs and silently drop the centimes
 //   * the return opens in a separate browser tab
-//   * menu entries and buttons are prefixes of each other ("Wertschriften" /
-//     "Wertschriftenverzeichnis", "Speichern" / "Speichern und schliessen"),
-//     so a substring match clicks the wrong one
+//   * menu entries and buttons contain each other, at both ends: a compound
+//     noun grows at the back ("Wertschriften" / "Wertschriftenverzeichnis",
+//     "Speichern" / "Speichern und schliessen") and a qualifier grows at the
+//     front ("Einkünfte" / "Übrige Einkünfte"), so a substring match clicks the
+//     wrong one and a breadcrumb read as a line rather than a path names it
 //   * the session lives in a session cookie, and a request without it comes
 //     back either as a redirect to AGOV or — worse — as a 200 that merely says
 //     "Angemeldet als: Benutzer"
@@ -42,6 +44,12 @@ const SECTIONS = [
   ['wvz', 'Wertschriftenverzeichnis', 'Formular in Bearbeitung'],
   ['wertschriften', 'Wertschriften', 'Abgeschlossenes Formular'],
   ['einkuenfte', 'Einkünfte', 'Formular in Bearbeitung'],
+  // The other way round two German section names nest: a qualifier in FRONT of
+  // the noun, so this one ENDS with "Einkünfte" where "Wertschriftenverzeichnis"
+  // BEGINS with "Wertschriften". Both readings of a breadcrumb this file has
+  // seen — the longest name in the line, then the last one in the line — get
+  // the front-nesting pair right and this one wrong, in opposite directions.
+  ['uebrige', 'Übrige Einkünfte', 'Formular in Bearbeitung'],
   ['liegenschaften', 'Liegenschaften', 'Ausgeschaltet aufgrund Ihrer Eingaben'],
   ['ergebnisse', 'Ergebnisse', 'Formular in Bearbeitung'],
   ['abschluss', 'Abschluss', 'Formular in Bearbeitung'],
@@ -220,6 +228,10 @@ export function start() {
     // portal will not open Wertschriften and leaves you on
     // Wertschriftenverzeichnis, whose name CONTAINS the one that was asked for.
     wertschriftenBlocked: false,
+    // And once more for the pair that nests the other way: the portal will not
+    // open Einkünfte and leaves you on Übrige Einkünfte, whose name ENDS with
+    // the one that was asked for.
+    einkuenfteBlocked: false,
     // What the portal writes in its breadcrumb when that is not the label on
     // the menu entry — a shortened form, or a word that is no menu entry at all.
     crumbLabel: null,
@@ -377,9 +389,15 @@ export function start() {
       // an overview page — and an overview page of this portal carries amounts,
       // which is what makes "the page has a number on it" no proof of a tax
       // calculation.
+      //
+      // And the banner names the section it is refusing, because that is what
+      // a refusal reads like when the thing being refused is a calculation.
+      // The word "Ergebnisse" is then in the CONTENT of a page that is not the
+      // results page, which is all it takes for "the last line carrying the
+      // word that is not the menu entry" to anchor on a refusal.
       if (s === 'ergebnisse' && state.ergebnisseBlocked) {
         s = 'wertschriften';
-        blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
+        blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular — die Ergebnisse lassen sich erst danach berechnen.</div>';
       }
       if (s === 'abschluss' && state.abschlussBlocked) {
         s = 'einkuenfte';
@@ -391,6 +409,14 @@ export function start() {
       // wrong page comes back under the right name.
       if (s === 'wertschriften' && state.wertschriftenBlocked) {
         s = 'wvz';
+        blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
+      }
+      // The mirror image of it, on the pair whose longer name ends with the
+      // shorter one. Here the breadcrumb of the page you were left on contains
+      // the requested name at its END, so a check that takes the LAST menu
+      // entry named in the line reads it as the requested section itself.
+      if (s === 'einkuenfte' && state.einkuenfteBlocked) {
+        s = 'uebrige';
         blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular.</div>';
       }
       const btn = form.get('b');
@@ -444,6 +470,11 @@ export function start() {
         wertschriften: `<h2>Wertschriften</h2><p>Übersicht Wertschriften.</p>
           <table><tr><td>Total Bruttoertrag</td><td>1’234.00</td></tr></table>`,
         liegenschaften: '<h2>Liegenschaften</h2>',
+        // Its own box, so a test can tell which of the two pages it is looking
+        // at from the fields alone — which is how the wrong page came back
+        // under the right name in the first place.
+        uebrige: `<h2>Übrige Einkünfte</h2>
+          <table class="fields"><tr><td>Alimente</td><td><input type="text" id="form:ueb:0:betrag" value=""></td></tr></table>`,
       }[s] || '<p>Bitte wählen Sie links einen Abschnitt.</p>';
 
       // The Abschluss page deliberately has no "TaxMe ... >" breadcrumb.
