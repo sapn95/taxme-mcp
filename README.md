@@ -141,6 +141,7 @@ Override the locations with env vars if you want:
 | `TAXME_BROWSER` | auto-detect | `chrome`, `chrome-canary`, `edge`, `brave`, `chromium`, or an absolute path |
 | `TAXME_CHROMIUM` | — | legacy alias for `TAXME_BROWSER` |
 | `TAXME_BASE_URL` | the real portal | portal base URL; exists so the test suite can drive a local fixture instead of a real taxpayer's account |
+| `TAXME_WAIT_SCALE` | `1` | scales the fixed pauses that wait for TaxMe to rebuild the page, and nothing else — no timeout is derived from it. Only shortens: anything that is not a finite number in `(0, 1]` is ignored, and no scaled pause goes below 25 ms. Exists for the same reason as `TAXME_BASE_URL` — a fixture has nothing to rebuild |
 
 A variable that is **set**, even to the empty string, is authoritative: an empty
 `TAXME_STATE` means *no* session cache, not "fall back to the default one".
