@@ -28,7 +28,9 @@
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "coverage": "c8 --reporter=text-summary --reporter=text --check-coverage --lines 85 --functions 90 --branches 78 -- node --test --test-concurrency=1 test/*.test.mjs",
     "gate": "node --check index.js && npm run lint && node scripts/smoke.mjs && node scripts/hygiene.mjs && npm run coverage",
-    "prepublishOnly": "node --check index.js && node scripts/smoke.mjs && node scripts/hygiene.mjs"
+    "prepublishOnly": "node --check index.js && node scripts/smoke.mjs && node scripts/hygiene.mjs",
+    "mutate": "node scripts/mutate-changed.mjs",
+    "mutate:all": "stryker run"
   },
   "files": [
     "index.js",
@@ -44,6 +46,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^9.6.1",
     "c8": "^12.0.0",
     "eslint": "^10.8.0",
     "globals": "^17.8.0"
