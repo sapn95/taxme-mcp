@@ -1053,7 +1053,20 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
           ? { error: `Steuererklärung ${args.year} nicht gefunden`, returns: listed.returns }
           : { status: listed.status, error: `Steuererklärung ${args.year} liess sich nicht öffnen: ${listed.error || 'die Fallübersicht war nicht lesbar'}` });
       }
-      const [popup] = await Promise.all([ c.waitForEvent('page', { timeout: 15000 }).catch(() => null), link.click() ]);
+      // Both sides swallowed, not just the wait. Promise.all rejects the
+      // moment EITHER side does, and the click is the side that fails for
+      // reasons which have nothing to do with the tab: Playwright waits for the
+      // page to settle after a click and gives up at its own timeout, so a
+      // portal that goes back to the server to build the edit view lands the
+      // click, opens the popup, and still throws — and the rejection takes the
+      // popup with it. The sibling epost server was found doing exactly this
+      // with a download: the file arrived, the click timed out, and the
+      // finished download was discarded by the failure of a step that had
+      // already succeeded. The click's outcome is not the evidence here and
+      // never was; the tab is, and everything below already interrogates it —
+      // no popup leaves `ep` as the case list, where the menu and year checks
+      // refuse it in their own words.
+      const [popup] = await Promise.all([ c.waitForEvent('page', { timeout: 15000 }).catch(() => null), link.click().catch(() => {}) ]);
       const ep = popup || main;
       await ep.waitForLoadState('domcontentloaded'); await ep.waitForTimeout(7000);
       await ep.bringToFront().catch(() => {});
