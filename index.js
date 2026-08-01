@@ -401,6 +401,34 @@ async function readMenu(p) {
   }, MENU_STATUS);
 }
 
+// Does this line of the page text come from something that HEADS what follows
+// it? A line the word "Ergebnisse" begins is not yet a heading: German writes
+// the same refusal either way round, and "Ergebnisse lassen sich erst berechnen,
+// wenn die Fehler im Formular korrigiert sind" puts it in front of a sentence.
+// Word order is the portal's phrasing and says nothing about which page is
+// open. The DOM says which is which — a heading tag, a legend, a caption, a th,
+// an element carrying role=heading, or one of the title/header/heading/caption
+// classes a JSF panel writes its own name into — and a refusal banner is none of
+// them. Compared on collapsed whitespace, because a line of innerText joins
+// table cells with tabs where the element's own text does not.
+async function headsSomething(p, line) {
+  const want = String(line).replace(/\s+/g, ' ').trim();
+  if (!want) return false;
+  return p.evaluate(w => {
+    const tags = 'h1,h2,h3,h4,h5,h6,legend,caption,th,summary,[role=heading]';
+    for (const e of document.querySelectorAll('*')) {
+      const cls = typeof e.className === 'string' ? e.className : '';
+      // Substring, not a word, because these class names are written every way
+      // a framework can think of — ui-panel-title, panelHeader, sectionHeading.
+      // A false yes here only leaves the answer where it already was; a false no
+      // refuses a calculation that is really on the page.
+      if (!/title|header|heading|caption/i.test(cls + ' ' + (e.id || '')) && !e.matches(tags)) continue;
+      if ((e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim() === w) return true;
+    }
+    return false;
+  }, want);
+}
+
 // Interactive fields on the current page. `limit` keeps a tool result readable;
 // resolution passes none, because a form with more than sixty boxes is exactly
 // the kind where the field you want is the sixty-first — and it used to be
@@ -567,12 +595,11 @@ const noReturnHere = async (p, extra = '') => ({
 // refusing to leave the page you were on is the whole reason this exists, and
 // that page's name is usually the shorter of the two. The rule is prefix, not
 // length; saying length would wave through the refusal it was written to catch.
-function wentElsewhere(crumb, menu, wanted) {
+function landedOn(crumb, menu) {
   // The portal writes ">" between the steps; the two typographic arrows cost
   // nothing here and a breadcrumb built from one of them would otherwise be a
   // single long step, which is the reading being replaced.
   const steps = String(crumb || '').toLowerCase().split(/[>›»]/);
-  const want = String(wanted).toLowerCase();
   let landed = '';
   for (let k = steps.length - 1; k >= 0 && !landed; k--) {
     for (const m of menu) {
@@ -581,7 +608,25 @@ function wentElsewhere(crumb, menu, wanted) {
       if (s.length > landed.length) landed = s;
     }
   }
+  return landed;
+}
+
+function wentElsewhere(crumb, menu, wanted) {
+  const landed = landedOn(crumb, menu);
+  const want = String(wanted).toLowerCase();
   return landed && landed !== want && !want.startsWith(landed) ? landed : '';
+}
+
+// The same reading asked the other way round: does the breadcrumb SAY we are on
+// the entry that was clicked? "It does not contradict us" and "it says so" are
+// two different answers and this file had only ever needed the first, because
+// the only question was whether to refuse. A breadcrumb naming no entry of this
+// menu gives neither, and a tool that reads a number off the page needs to know
+// that it is standing on nothing.
+function crumbNames(crumb, menu, wanted) {
+  const landed = landedOn(crumb, menu);
+  const want = String(wanted).toLowerCase();
+  return !!landed && (landed === want || want.startsWith(landed));
 }
 
 // Set a single radio/checkbox to a WANTED state (label click, else JS click +
@@ -891,7 +936,7 @@ const TOOLS = [
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an option neither a radio group nor a dropdown has (the reply lists the ones it does), and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards and compared with what was asked for — a radio the portal hands back unanswered, and a dropdown it hands back on another option or on none, come back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed. An empty or blank label is refused rather than resolved — an empty substring matches every element on the page, so it would press whichever button comes first.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
-  { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition, and it is settled the way taxme_goto_section settles it — by the menu entry the breadcrumb names — before a word of the page is read: a portal that refused to open the section comes back as an error naming the page you are really on instead of that page\'s text. A breadcrumb that names no entry of this menu settles nothing there, though, so the word "Ergebnisse" turning up in a refusal banner is ruled out a second way as well: the calculation is only ever read from a line the word HEADS — a heading names its section, a sentence about it carries the word inside — and never from the left-menu entry, which is on every page of the return. A click that landed on a page with no menu at all — an expired session lands on the login form — is reported as no return being open, not as a page carrying no calculation.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition, and it is settled the way taxme_goto_section settles it — by the menu entry the breadcrumb names — before a word of the page is read: a portal that refused to open the section comes back as an error naming the page you are really on instead of that page\'s text. A breadcrumb that names no entry of this menu settles nothing there, though, and where it has settled nothing the page itself has to say the section is open before an amount is read off it: the calculation is only ever read from a line the word HEADS — never from the left-menu entry, which is on every page of the return — and, absent a breadcrumb naming the entry, only when that line IS a heading of the page (a heading tag, a legend, a caption, a title/header panel) rather than a sentence beginning with the same word, since a refusal banner can be written either way round and word order is the portal\'s phrasing, not evidence about which page is open. A click that landed on a page with no menu at all — an expired session lands on the login form — is reported as no return being open, not as a page carrying no calculation.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click. A page whose text could not be read at all (page_unreadable) is refused for the same reason one step further back: a read that failed is not a page that said no. In both cases the submit button is named as not_clicked rather than would_click, because nothing would be pressed. And a page carrying no menu at all is no return — an expired session lands on the login form — which is said in those words rather than as the Abschluss page merely not being open.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
 
@@ -1261,8 +1306,21 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // A heading NAMES what it heads, so the word comes first on the line,
       // while a sentence about the section carries it somewhere inside. That is
       // the difference between "Ergebnisse" or "Ergebnisse 2025" and "… die
-      // Ergebnisse lassen sich erst danach berechnen", and unlike the check
-      // above it holds whatever the breadcrumb does or does not say.
+      // Ergebnisse lassen sich erst danach berechnen".
+      //
+      // But it is the difference between two ways of writing one sentence, and
+      // German writes that refusal either way round: "Ergebnisse lassen sich
+      // erst berechnen, wenn die Fehler im Formular korrigiert sind" says the
+      // identical thing with the word in front, and that line heads it. Under a
+      // breadcrumb naming no entry of this menu — where the landing check above
+      // stands down by design — the refusal came back as `text` exactly as it
+      // did before this rule existed, the portal's own sentence as line one and
+      // the overview page's total as the tax bill. So the rule was never the
+      // thing it was written as: it read the portal's phrasing and reported it
+      // as evidence about which page is open. What page is open has two
+      // witnesses here and neither of them is a word order, and one of the two
+      // has to say so before an amount is read off it. They are checked below,
+      // once the anchor line is known.
       const lines = body.split('\n');
       const isMenuStatus = new RegExp(MENU_STATUS);
       const headsIt = /^Ergebnisse\b/;
@@ -1299,6 +1357,31 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         // sentence naming the section it is refusing.
         return text({
           error: 'Das Portal hat "Ergebnisse" nicht geöffnet — die Seite führt den Menüpunkt, zeigt aber keine Berechnung; bitte im Portal prüfen',
+          breadcrumb: crumb,
+        });
+      }
+      // The two witnesses. The breadcrumb naming the entry that was clicked is
+      // the reading taxme_goto_section already uses, asked positively for once:
+      // "it says we are here", not "it does not say we are elsewhere" — which is
+      // all an unrecognised word ever amounted to, and which the check above
+      // rightly refuses to turn into a refusal. Failing that, the anchor line has
+      // to be an element that heads something rather than a sentence that starts
+      // with the right word.
+      //
+      // Either one on its own is enough, and that is deliberate. A portal that
+      // writes its own words in the breadcrumb still gets read as long as the
+      // calculation hangs from a heading, and a portal that heads nothing — the
+      // Abschluss page of this one carries no breadcrumb at all, so pages
+      // without one exist — still gets read as long as the breadcrumb names the
+      // section. What is refused is the page that offers neither, which is the
+      // page where nothing but the portal's phrasing said this was a
+      // calculation. A menu built out of heading tags would answer the second
+      // witness with the entry that is on every page of the return — which is
+      // why that entry is skipped a few lines above, and why this is asked at
+      // all only where the breadcrumb has said nothing.
+      if (!crumbNames(crumb, menu, opened) && !(await headsSomething(p, lines[at]))) {
+        return text({
+          error: 'Das Portal hat "Ergebnisse" nicht geöffnet — die Zeile mit dem Wort ist keine Überschrift der Seite, und der Breadcrumb nennt keinen Menüpunkt dieser Steuererklärung; es wurde keine Berechnung gelesen, bitte im Portal prüfen',
           breadcrumb: crumb,
         });
       }
