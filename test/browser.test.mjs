@@ -980,6 +980,34 @@ describe('snapshot and results', () => {
     assert.match(back.data.text ?? '', /4['’]321\.00/, 'and the real calculation is still read');
   });
 
+  test('nor is one whose refusal happens to put the word first', SLOW, async () => {
+    // The same page again, refused the same way under the same unrecognised
+    // breadcrumb, with one thing changed: the banner says it the other way
+    // round. German lets it — "Ergebnisse lassen sich erst berechnen, wenn die
+    // Fehler im Formular korrigiert sind" is the identical refusal to "… die
+    // Ergebnisse lassen sich erst danach berechnen" — and the rule that was
+    // meant to catch the previous case tells the two apart by nothing but that
+    // word order. So the refusal came back as `text` exactly as it did before
+    // that rule existed: the portal's own sentence as line one, the overview
+    // page's Total Bruttoertrag underneath it as the tax bill, no error and no
+    // breadcrumb to see it by. Word order is the portal's phrasing; it is not
+    // evidence about which page the browser is standing on.
+    await portal.control({ ergebnisseBlocked: true, crumbLabel: 'Übersicht', bannerLeadsWithSection: true });
+    const led = await srv.call('taxme_results');
+    // Every flip undone before a word is asserted, or a failure here leaves
+    // every later test reading a page the portal does not really serve.
+    await portal.control({ ergebnisseBlocked: false, crumbLabel: null, bannerLeadsWithSection: false });
+    assert.equal(led.data.text, undefined,
+      `a refusal came back as the calculation because it began with the word: ${JSON.stringify(led.data).slice(0, 300)}`);
+    assert.match(led.data.error ?? '', /nicht geöffnet/,
+      `and it has to say the section was never opened: ${JSON.stringify(led.data).slice(0, 300)}`);
+    assert.ok(!/1['’]234\.00/.test(JSON.stringify(led.data)),
+      'and the other page\'s total must not be in the answer at all');
+
+    const back = await srv.call('taxme_results');
+    assert.match(back.data.text ?? '', /4['’]321\.00/, 'and the real calculation is still read');
+  });
+
   test('a click that landed on the login form is not a return with no calculation', SLOW, async () => {
     // The other end of the same click. taxme_goto_section was taught last round
     // that a page carrying no menu is no return at all — the menu entry links

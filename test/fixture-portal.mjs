@@ -235,6 +235,15 @@ export function start() {
     // What the portal writes in its breadcrumb when that is not the label on
     // the menu entry — a shortened form, or a word that is no menu entry at all.
     crumbLabel: null,
+    // Which way round the refusal banner names the section it is refusing.
+    // German writes that sentence either way, and only one of them was ever
+    // here: "… die Ergebnisse lassen sich erst danach berechnen" carries the
+    // word inside, where "Ergebnisse lassen sich erst berechnen, wenn …" puts
+    // it in front. A rule that reads "the line the word heads" as "the heading
+    // of the section" tells the two apart by nothing but that word order, and
+    // the second phrasing was as good as the calculation itself — so the
+    // fixture writes either, and the rule has a portal that can defeat it.
+    bannerLeadsWithSection: false,
   };
 
   const route = (req, res, body) => {
@@ -395,9 +404,16 @@ export function start() {
       // The word "Ergebnisse" is then in the CONTENT of a page that is not the
       // results page, which is all it takes for "the last line carrying the
       // word that is not the menu entry" to anchor on a refusal.
+      //
+      // `bannerLeadsWithSection` writes the same refusal the other way round,
+      // with the word in front. Nothing but word order separates the two, and a
+      // rule that reads the word coming first as "this line is the heading of
+      // the results panel" hands this one back as the calculation.
       if (s === 'ergebnisse' && state.ergebnisseBlocked) {
         s = 'wertschriften';
-        blocked = '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular — die Ergebnisse lassen sich erst danach berechnen.</div>';
+        blocked = state.bannerLeadsWithSection
+          ? '<div class="error">Ergebnisse lassen sich erst berechnen, wenn die Fehler im Formular korrigiert sind.</div>'
+          : '<div class="error">Bitte korrigieren Sie zuerst die Fehler im Formular — die Ergebnisse lassen sich erst danach berechnen.</div>';
       }
       if (s === 'abschluss' && state.abschlussBlocked) {
         s = 'einkuenfte';
