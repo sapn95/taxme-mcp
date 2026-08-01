@@ -26,7 +26,7 @@
     "smoke": "node scripts/smoke.mjs",
     "hygiene": "node scripts/hygiene.mjs",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
-    "coverage": "c8 --reporter=text-summary --reporter=text --check-coverage --lines 85 --functions 90 --branches 78 -- node --test test/*.test.mjs",
+    "coverage": "c8 --reporter=text-summary --reporter=text --check-coverage --lines 85 --functions 90 --branches 78 -- node --test --test-concurrency=1 test/*.test.mjs",
     "gate": "node --check index.js && npm run lint && node scripts/smoke.mjs && node scripts/hygiene.mjs && npm run coverage",
     "prepublishOnly": "node --check index.js && node scripts/smoke.mjs && node scripts/hygiene.mjs"
   },
