@@ -92,6 +92,40 @@ The whole point of this server is that **you don't re-login every time.**
 So the normal flow is: `taxme_login` once, then use the read/edit tools freely;
 re-login only when you actually get `login_required`.
 
+```mermaid
+flowchart TD
+    C["MCP client"] -->|"stdio JSON-RPC"| S["taxme-mcp"]
+    S --> Q{"Is the cached<br/>session still good?"}
+
+    Q -->|"yes"| DRIVE["Playwright drives<br/>the TaxMe portal"]
+    Q -->|"no"| LR["every tool answers<br/>login_required"]
+
+    LR --> LOGIN["taxme_login<br/>visible window, waits ~8 min"]
+    LOGIN --> ME["you complete SwissID / AGOV yourself —<br/>2FA, or one Touch ID on an<br/>installed, signed browser"]
+
+    DRIVE --> R[("BE-Login → TaxMe")]
+    ME --> R
+
+    DRIVE -.->|"after every successful call"| ST
+    ME -.->|"after login"| ST
+
+    subgraph disk["on disk — live cookies for your tax account"]
+        P["profile/<br/>keeps the device trusted,<br/>so AGOV stops re-prompting 2FA"]
+        ST["state.json<br/>Playwright storageState"]
+    end
+    disk -.->|"re-seeded into a fresh<br/>context on startup"| Q
+
+    classDef secret fill:#fdecea,stroke:#c0392b
+    classDef you fill:#fff4e5,stroke:#d9822b
+    class P,ST secret
+    class ME,LOGIN you
+    style disk fill:#fbfbfb,stroke:#999,stroke-dasharray: 4 3
+```
+
+The two red boxes are the reason the section below says what it says: both hold
+live cookies for your tax account, and anyone holding them is you until the
+session expires.
+
 > **Security:** `state.json` (and the `profile/` directory) contain **live
 > session cookies** for your tax account. They are secrets. Both are in
 > `.gitignore` — **never commit or share them.** Anyone with `state.json` can
