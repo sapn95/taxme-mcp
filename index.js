@@ -64,6 +64,25 @@ const PKG = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 // with it the real taxpayer's logged-in session.
 const envOr = (name, fallback) => (process.env[name] !== undefined ? process.env[name] : fallback);
 
+// TaxMe answers a click by rebuilding the page around it and says nothing when
+// it is finished, so the automation pauses wherever the DOM is known to be
+// replaced underneath it. Twelve of those pauses come to fifty seconds of doing
+// nothing per pass — earned by the portal, and not by the DOM fixture the tests
+// drive, which has already answered by the time the first one starts. Waiting
+// for it anyway was most of what a test run cost, and a suite too slow to run
+// twice is one that gets run once. So the pauses take a scale, and only the
+// pauses: no timeout is derived from it, so a run at a tenth still proves what
+// a real one does about how long the automation waits before it gives up. It
+// only ever shortens — anything outside (0, 1] is a typo rather than a way to
+// make the portal slower, and a typo gets the default.
+const WAIT_SCALE = (() => {
+  const n = Number(envOr('TAXME_WAIT_SCALE', '1'));
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 1;
+})();
+// Not zero at the bottom: a pause of nothing is a yield that lets the next line
+// run in the same frame as the click, which is the one thing these may not be.
+const pause = (p, ms) => p.waitForTimeout(Math.max(25, Math.round(ms * WAIT_SCALE)));
+
 const PROFILE = envOr('TAXME_PROFILE', join(homedir(), '.taxme-mcp', 'profile'));
 const STATE = envOr('TAXME_STATE', join(homedir(), '.taxme-mcp', 'state.json'));
 const BASE = envOr('TAXME_BASE_URL', 'https://www.belogin.directories.be.ch').replace(/\/+$/, '');
@@ -261,7 +280,7 @@ async function shownYear(p, breadcrumb) {
 
 async function ensure(p, url, timeout = 30000) {
   const res = await p.goto(url, { waitUntil: 'domcontentloaded', timeout });
-  await p.waitForTimeout(2500);
+  await pause(p, 2500);
   // A 404 or a maintenance page is not a session. Only the login heuristics
   // below used to decide, so any page that merely did not look like a login
   // form was reported as authenticated — and the cached state refreshed on the
@@ -282,7 +301,7 @@ async function readAccountStatement(p) {
   // Only a session problem is a session problem: "unreachable" told the caller
   // to log in again when the portal had answered 404.
   if (st !== 'ok') return { status: st };
-  await p.waitForTimeout(2500);
+  await pause(p, 2500);
   const text = await p.innerText('body');
   // A year heading stands alone on its line. Any "20xx" anywhere in the text
   // used to start a new block, and a Kontoauszug is full of dates — the 2024
@@ -338,7 +357,7 @@ async function listReturns(p) {
   // Only a session problem is a session problem: "unreachable" told the caller
   // to log in again when the portal had answered 404.
   if (st !== 'ok') return { status: st };
-  await p.waitForTimeout(4000);
+  await pause(p, 4000);
   const rows = await p.evaluate(() => {
     const out = [];
     for (const tr of document.querySelectorAll('table tr')) {
@@ -911,7 +930,7 @@ async function clickByText(p, label) {
   // longer open.
   const real = (await el.evaluate(e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || label;
   await el.click({ timeout: 10000 });
-  await p.waitForTimeout(4000).catch(() => {});
+  await pause(p, 4000).catch(() => {});
   await p.waitForLoadState('domcontentloaded').catch(() => {});
   return { clicked: real, ...(real === label ? {} : { requested: label }), url_changed: p.url() !== before };
 }
@@ -1002,7 +1021,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
           return x.host === HOST && !x.pathname.includes('Error') && !looksLikeLogin(String(u));
         } catch { return false; }
       }, { timeout: 480000 });
-      await p.waitForTimeout(3000);
+      await pause(p, 3000);
       // And then ask the portal rather than the address bar. An address is not
       // an answer to "is anybody logged in": the portal answers 200 with a page
       // that merely says "Angemeldet als: Benutzer" when the login went nowhere,
@@ -1041,7 +1060,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       const st = await ensure(main, CASES);
       if (st === 'login_required') return text({ status: 'login_required', message: 'Bitte zuerst taxme_login.' });
       if (st !== 'ok') return text({ status: st, message: 'Das Portal hat nicht geantwortet wie erwartet.' });
-      await main.waitForTimeout(3000);
+      await pause(main, 3000);
       const link = await byText(main, `Steuererklärung ${args.year}`);
       if (!link) {
         // Why the link is not there is two different answers, and the same page
@@ -1068,7 +1087,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // refuse it in their own words.
       const [popup] = await Promise.all([ c.waitForEvent('page', { timeout: 15000 }).catch(() => null), link.click().catch(() => {}) ]);
       const ep = popup || main;
-      await ep.waitForLoadState('domcontentloaded'); await ep.waitForTimeout(7000);
+      await ep.waitForLoadState('domcontentloaded'); await pause(ep, 7000);
       await ep.bringToFront().catch(() => {});
       // What the tab that opened actually shows, before anything is promised
       // about it. This used to report the year it had been asked for and call
@@ -1158,7 +1177,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // against. Same reason taxme_click stopped echoing the label it was given.
       const wanted = (await el.evaluate(e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || String(args.name);
       await el.click({ timeout: 10000 });
-      await p.waitForTimeout(5000); await p.waitForLoadState('domcontentloaded').catch(() => {});
+      await pause(p, 5000); await p.waitForLoadState('domcontentloaded').catch(() => {});
       await saveState();
       const snap = await snapshot(p);
       const crumb = snap.breadcrumb;
@@ -1224,7 +1243,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         // than the failure itself.
         try { results.push(await fillOne(p, v.target, v.value)); }
         catch (e) { results.push({ target: v.target, ok: false, error: e.message || String(e) }); }
-        await p.waitForTimeout(600);
+        await pause(p, 600);
       }
       await saveState();
       return text({ results, ...(await fieldList(p, 'fields_after')) });
@@ -1253,7 +1272,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       } catch (e) {
         return text({ error: `"Ergebnisse" liess sich nicht öffnen: ${e.message.split('\n')[0].slice(0, 120)}` });
       }
-      await p.waitForTimeout(6000);
+      await pause(p, 6000);
       // Where the portal actually put us, asked of the two things that say so —
       // the menu and the breadcrumb — before a word of the page is read as a
       // calculation. taxme_goto_section asks both of a click on any menu entry;
@@ -1445,7 +1464,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       } catch (e) {
         return text({ submitted: false, error: `"Abschluss" liess sich nicht öffnen: ${e.message.split('\n')[0].slice(0, 120)}` });
       }
-      await p.waitForTimeout(6000);
+      await pause(p, 6000);
       // And confirm we are actually there. Testing the page text for the word
       // "Abschluss" did not do that: it is a menu entry, the menu is on every
       // page of the return, and the entry had just been found there — so the
@@ -1589,7 +1608,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         });
       }
       await submit.click();
-      await p.waitForTimeout(6000);
+      await pause(p, 6000);
       // A click is not a submission. The portal can reject the return for its
       // own reasons — validation, an expired session — and this reported
       // "submitted: true" purely because something with the right label had

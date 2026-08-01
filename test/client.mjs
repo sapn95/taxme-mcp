@@ -21,6 +21,15 @@ export async function startServer(env = {}, { timeout = 30000 } = {}) {
     env: {
       ...process.env,
       TAXME_BASE_URL: 'http://127.0.0.1:1',   // refused, not the real portal
+      // The automation pauses to let TaxMe rebuild the page. The fixtures these
+      // tests drive have rebuilt it before the pause starts, so the pauses are
+      // the run. Set here rather than at each spawn: a default a caller has to
+      // remember is one that is eventually forgotten, and then a single file
+      // quietly costs more than all the others together. Overridable, because
+      // fast enough is a property of the machine — on a loaded one a pause can
+      // lose the race it exists to win, and a run that must be slowed down is
+      // better than one that must be believed.
+      TAXME_WAIT_SCALE: process.env.TAXME_WAIT_SCALE || '0.08',
       TAXME_PROFILE: join(scratch, 'profile'),
       TAXME_STATE: join(scratch, 'state.json'),
       ...env,
