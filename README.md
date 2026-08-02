@@ -324,6 +324,7 @@ there is no credential, by design.
     npm run gate      # syntax, lint, smoke, hygiene, tests with coverage floors
     npm test          # the test suite alone
     npm run coverage  # the suite plus the enforced coverage thresholds
+    npm run mutate    # mutation-test the lines this branch changed
 
 `npm run gate` is what CI runs. It needs a Chromium
 (`npx playwright install chromium`), because the tests drive the real automation
@@ -364,6 +365,21 @@ identifiers.
 Roughly 90% of `index.js` is covered. The rest is mostly the callbacks handed to
 Playwright's `evaluate()`: they execute inside Chromium, so Node's coverage never
 sees them run — they are exercised, just not counted.
+
+### Mutation testing
+
+`npm run mutate` asks a different question from everything above: not "do the
+tests pass" but "would they notice if a guard were removed". StrykerJS deletes
+one piece of behaviour at a time and reruns the suite; whatever survives is
+something no assertion is watching.
+
+It found eleven real gaps in the sibling [pingen-mcp](https://github.com/sapn95/pingen-mcp)
+after model review rounds had stopped turning anything up. Here it runs over
+the lines a branch changed rather than the whole file, because this suite
+drives a real browser once per mutant and a full pass costs hours.
+`npm run mutate:all` does the whole file if you have the time;
+`stryker.config.json` explains every setting that is not a default, including
+why incremental mode is off.
 
 ## License
 
