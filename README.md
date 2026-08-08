@@ -201,7 +201,7 @@ their own MCP config.
 
 ## Tool reference
 
-**Read / session**
+### Read / session
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
@@ -210,7 +210,7 @@ their own MCP config.
 | `taxme_account_statement` | — | open amounts (CHF) per tax year — Kantons-/Gemeindesteuern, direkte Bundessteuer, Gemeindeabgaben. A statement prints a due date under every claim, and the 2024 assessment falls due in 2025, so an amount is only reported under a year the page itself puts it under; when none can be, you get `status: "unparsable"` rather than an empty list that would read as *nothing owed*. A page that is not a Kontoauszug at all — a maintenance notice, an error page — is `unparsable` too: an empty list of open amounts is only ever reported when the statement itself is on the page |
 | `taxme_list_returns` | — | tax returns (Steuererklärungen) with status (*In Bearbeitung* / *Quittiert* …). An empty list is only reported when the case list itself is on the page: a page that is not one — a maintenance notice, an error page — and a list whose rows carry no year we could tie them to are both `status: "unparsable"`, because *there is nothing to file* must not be concluded from a page that was never asked the question |
 
-**Navigate & edit a return**
+### Navigate & edit a return
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
@@ -223,7 +223,7 @@ their own MCP config.
 | `taxme_click` | `label` (string) | click a button/link by visible text (*Neuen Eintrag erfassen*, *Speichern*, *Nächste Seite*, *Vorherige Seite*, *Ändern* …); an exact label wins, a substring is the fallback, and `clicked` names the button that was actually pressed. An empty or blank label is refused rather than resolved: a substring that is empty matches every element on the page, so it would press whichever button happens to come first |
 | `taxme_results` | — | read the *Ergebnisse* / Steuerberechnung of the open return. Reaching that section is a precondition, and it is settled the way `taxme_goto_section` settles it — by the menu entry the breadcrumb names — before a word of the page is read as a calculation: a portal that refused to open the section comes back as an error naming the page you are actually on, not as that page's text. That check stands down on a breadcrumb naming no entry of this menu, and where it has settled nothing the page itself has to say the section is open before an amount is read off it: the calculation is only ever read from a line the word **heads** — never from the left-menu entry, which is on **every** page of the return — and, without a breadcrumb naming the entry, only when that line *is* a heading of the page (a heading tag, a legend, a caption, a title/header panel) rather than a sentence beginning with the same word. A refusal banner can be written either way round in German, so word order is the portal's phrasing and not evidence about which page is open. And if the click landed somewhere carrying no menu — an expired session lands on the login form — that is reported as no return being open, not as a page with no calculation on it |
 
-**Submit (gated)**
+### Submit (gated)
 
 | Tool | Args | Purpose |
 | --- | --- | --- |
@@ -302,7 +302,9 @@ workflow in the repo from publishing under your name.
 
 Then every release is one command:
 
-    npm version patch && git push --follow-tags
+```bash
+npm version patch && git push --follow-tags
+```
 
 The tag triggers the release workflow: it upgrades npm (trusted publishing needs
 >= 11.5.1 and Node >= 22.14), refuses a tag whose version disagrees with
@@ -310,8 +312,10 @@ package.json, runs the gate, and publishes with a signed provenance statement.
 
 ### If the publish fails with 404
 
-    npm notice publish Signed provenance statement ... from GitHub Actions
-    npm error 404 Not Found - PUT https://registry.npmjs.org/taxme-mcp
+```text
+npm notice publish Signed provenance statement ... from GitHub Actions
+npm error 404 Not Found - PUT https://registry.npmjs.org/taxme-mcp
+```
 
 Provenance was signed, so OIDC worked — the registry simply does not accept this
 workflow as a publisher yet. That means the **trusted publisher is not configured**,
@@ -321,10 +325,12 @@ there is no credential, by design.
 
 ## Checks
 
-    npm run gate      # syntax, lint, smoke, hygiene, tests with coverage floors
-    npm test          # the test suite alone
-    npm run coverage  # the suite plus the enforced coverage thresholds
-    npm run mutate    # mutation-test the lines this branch changed
+```bash
+npm run gate      # syntax, lint, smoke, hygiene, tests with coverage floors
+npm test          # the test suite alone
+npm run coverage  # the suite plus the enforced coverage thresholds
+npm run mutate    # mutation-test the lines this branch changed
+```
 
 `npm run gate` is what CI runs. It needs a Chromium
 (`npx playwright install chromium`), because the tests drive the real automation
