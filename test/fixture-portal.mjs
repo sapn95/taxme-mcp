@@ -381,15 +381,21 @@ export function start() {
 
     // The receipts page: the file input is hidden behind a button, as in the
     // portal, and the chosen files are posted as soon as they are picked.
+    // The receipts page as the portal builds it: the widget lives in an
+    // iframe, its file input is hidden, and the control that opens the chooser
+    // is a styled <div>, not a button or a link. Picked files are posted at once.
     if (u.pathname === UPLOAD) {
-      if (req.method === 'POST') for (const m of body.matchAll(/filename="([^"]+)"/g)) state.uploads.push(m[1]);
       return html(shell('Belege', `<div>TaxMe 2025 &gt; Belege hinzufügen</div>
-<form method="post" enctype="multipart/form-data" action="${UPLOAD}">
-  <input type="file" name="f" id="fileInput" multiple style="display:none" onchange="this.form.submit()">
-  <button type="button" onclick="document.getElementById('fileInput').click()">Weitere Belege vom Computer</button>
-</form>
+<iframe src="${UPLOAD}/widget" style="width:600px;height:200px"></iframe>
 <ul>${state.uploads.map(n => `<li>${n}</li>`).join('')}</ul>
 <a href="${EDIT}?year=2025&amp;s=einkuenfte">Abbrechen</a>`));
+    }
+    if (u.pathname === `${UPLOAD}/widget`) {
+      if (req.method === 'POST') for (const m of body.matchAll(/filename="([^"]+)"/g)) state.uploads.push(m[1]);
+      return html(`<!doctype html><meta charset="utf-8"><form method="post" enctype="multipart/form-data" action="${UPLOAD}/widget">
+  <input type="file" name="f" id="fileInput" multiple style="display:none" onchange="this.form.submit()">
+  <div class="btn" style="display:inline-block;padding:4px;border:1px solid" onclick="document.getElementById('fileInput').click()"><span>+</span> Weitere Belege vom Computer</div>
+</form><ul>${state.uploads.map(n => `<li>${n}</li>`).join('')}</ul>`);
     }
     if (u.pathname === EDIT) {
       // The case list still answers, only the edit view does not: the session

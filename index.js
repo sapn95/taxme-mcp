@@ -984,17 +984,25 @@ async function checkUploads(files) {
 // as pending rather than as done.
 const UPLOAD_WAIT = 30000;
 async function uploadFiles(p, files, names) {
-  const input = p.locator('input[type=file]');
-  if (await input.count()) {
-    await input.first().setInputFiles(files);
+  // The portal's widget is not a plain form: the file input can sit in an
+  // iframe and the "Weitere Belege vom Computer" control is a styled element,
+  // not an <a> or <button>. So every frame is searched, the input first, then
+  // any element carrying that text, and the file chooser it opens is answered.
+  const frames = p.frames();
+  let input = null;
+  for (const f of frames) { const l = f.locator('input[type=file]'); if (await l.count().catch(() => 0)) { input = l.first(); break; } }
+  if (input) {
+    await input.setInputFiles(files);
   } else {
-    const btn = await byText(p, 'Weitere Belege vom Computer', true);
+    let btn = null;
+    for (const f of frames) { const l = f.getByText(/Weitere Belege vom Computer/); if (await l.count().catch(() => 0)) { btn = l.last(); break; } }
     if (!btn) throw new Error('kein Datei-Upload auf dieser Seite — zuerst "Belege hinzufügen" öffnen');
     const [chooser] = await Promise.all([p.waitForEvent('filechooser', { timeout: 10000 }), btn.click({ timeout: 10000 })]);
     await chooser.setFiles(files);
   }
   const shown = async () => {
-    const t = (await p.evaluate(() => document.body.innerText).catch(() => '')) || '';
+    let t = '';
+    for (const f of p.frames()) t += '\n' + ((await f.evaluate(() => document.body ? document.body.innerText : '').catch(() => '')) || '');
     return names.filter(n => t.includes(n));
   };
   const until = Date.now() + UPLOAD_WAIT;
