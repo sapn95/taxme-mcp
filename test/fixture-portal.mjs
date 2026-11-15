@@ -397,6 +397,8 @@ export function start() {
   <input type="file" name="f" id="fileInput" multiple style="display:none" onchange="this.form.submit()">
   <div class="btn" style="display:inline-block;padding:4px;border:1px solid" onclick="document.getElementById('fileInput').click()"><span>+</span> Weitere Belege vom Computer</div>
 </form><ul>${state.uploads.map(n => `<li>${n}</li>`).join('')}</ul>
+<p>Weiter</p>
+<div class="btn" style="display:none">✓ Übernehmen</div>
 <form method="post" action="${UPLOAD}/widget?ok=1"><div class="btn" style="display:inline-block;padding:4px;border:1px solid" onclick="this.parentNode.submit()"><span>✓</span> Übernehmen</div></form>`);
     }
     if (u.pathname === EDIT) {
