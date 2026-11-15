@@ -37,6 +37,7 @@ const CASES = '/taxme-npo/facelets/caseSelection.jsf';
 const STATEMENT = '/taxme-bezug/gui/kontoauszug/forderungen';
 const EDIT = '/tmo/facelets/edit.jsf';
 const UPLOAD = '/tmo/facelets/upload.jsf';
+const PRINT = '/tmo/print.pdf';
 
 const SECTIONS = [
   ['personalien', 'Personalien', 'Formular in Bearbeitung'],
@@ -181,6 +182,8 @@ const einkuenfte = saved => `
   </table>
   <a href="${EDIT}?year=2025&amp;s=einkuenfte&amp;neu=1">Neuen Eintrag erfassen</a>
   <a href="${UPLOAD}">Belege hinzufügen</a>
+  <a href="${PRINT}?year=2025">PDF drucken</a>
+  <a href="/tmo/notpdf">Kein PDF</a>
   <input type="submit" name="b" value="Speichern und schliessen">
   <input type="submit" name="b" value="Speichern">
   <button type="submit" name="b" value="Nächste Seite">Nächste Seite</button>
@@ -328,7 +331,7 @@ export function start() {
                whose status is the word "Status". -->
           <tr><th>Steuererklärung</th><th>Status</th></tr>
           <tr><td><a href="${EDIT}?year=2025" target="_blank">Steuererklärung 2025</a></td><td>In Bearbeitung</td></tr>
-          <tr><td><a href="${EDIT}?year=2024" target="_blank">Steuererklärung 2024</a></td><td>Eingereicht</td></tr>
+          <tr><td><a href="${EDIT}?year=2024" target="_blank">Steuererklärung 2024</a></td><td>Eingereicht</td><td><a href="${PRINT}?year=2024">Drucken</a></td></tr>
         </table>`));
     }
 
@@ -384,6 +387,16 @@ export function start() {
     // The receipts page as the portal builds it: the widget lives in an
     // iframe, its file input is hidden, and the control that opens the chooser
     // is a styled <div>, not a button or a link. Picked files are posted at once.
+    // A printout: a PDF served as an attachment, as the portal's print links do.
+    if (u.pathname === PRINT) {
+      res.writeHead(200, { 'content-type': 'application/pdf', 'content-disposition': `attachment; filename="dvb_print_${u.searchParams.get('year') || '2025'}.pdf"` });
+      return res.end(`%PDF-1.4 fixture ${u.searchParams.get('year') || '2025'}`);
+    }
+    // A link that claims to print and hands back a web page.
+    if (u.pathname === '/tmo/notpdf') {
+      res.writeHead(200, { 'content-type': 'text/html', 'content-disposition': 'attachment; filename="x.pdf"' });
+      return res.end('<html>nope</html>');
+    }
     if (u.pathname === UPLOAD) {
       return html(shell('Belege', `<div>TaxMe 2025 &gt; Belege hinzufügen</div>
 <iframe src="${UPLOAD}/widget" style="width:600px;height:200px"></iframe>

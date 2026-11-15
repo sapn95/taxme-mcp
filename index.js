@@ -365,7 +365,13 @@ async function listReturns(p) {
       // A data row, not a header: "Steuererklärung / Status" as a header used to
       // become a return with the status "Status". A year is what makes it real.
       if (tr.querySelector('th')) continue;
-      if (cells.length >= 2 && /\b20\d{2}\b/.test(cells[0])) out.push({ fall: cells[0], status: cells[1] });
+      if (cells.length >= 2 && /\b20\d{2}\b/.test(cells[0])) {
+        // What can be done with the case from this row (print, receipt, view):
+        // the labels taxme_download needs, read off the row itself.
+        const actions = [...tr.querySelectorAll('a, button, input[type=submit], input[type=button], input[type=image]')]
+          .map(e => (e.value || e.innerText || e.title || e.alt || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+        out.push({ fall: cells[0], status: cells[1], ...(actions.length > 1 ? { actions } : {}) });
+      }
     }
     return out;
   });
@@ -1043,6 +1049,53 @@ async function uploadFiles(p, files, names) {
   return { uploaded: names, listed, ...(listed.length < names.length ? { pending: names.filter(n => !listed.includes(n)) } : {}) };
 }
 
+// Printouts and receipts come either as a download or as a PDF opened in a
+// new tab. The target is checked first: an absolute path ending in .pdf, in an
+// existing directory, and not an existing file, so nothing on disk is ever
+// overwritten by a printout.
+async function checkTarget(path) {
+  const { existsSync: ex, statSync } = await import('node:fs');
+  const { isAbsolute, dirname } = await import('node:path');
+  if (typeof path !== 'string' || !isAbsolute(path)) throw new Error(`kein absoluter Pfad: ${path}`);
+  if (!/\.pdf$/i.test(path)) throw new Error('Ziel muss auf .pdf enden');
+  if (ex(path)) throw new Error('Ziel existiert schon — es wird nichts überschrieben');
+  let d; try { d = statSync(dirname(path)); } catch { throw new Error('Zielordner existiert nicht'); }
+  if (!d.isDirectory()) throw new Error('Zielordner existiert nicht');
+}
+
+async function downloadPdf(p, el, path) {
+  const c = p.context();
+  const got = Promise.race([
+    p.waitForEvent('download', { timeout: 60000 }).then(d => ({ d })),
+    c.waitForEvent('page', { timeout: 60000 }).then(t => ({ t })),
+  ]);
+  await el.click({ timeout: 10000 });
+  let r;
+  try { r = await got; } catch { throw new Error('nach dem Klick kam weder ein Download noch ein neuer Tab'); }
+  const { writeFileSync, statSync } = await import('node:fs');
+  if (r.d) {
+    await r.d.saveAs(path);
+  } else {
+    // A PDF opened in a tab: in headless Chromium it arrives as a download of
+    // that tab; otherwise it is fetched with the session's own cookies.
+    const tab = r.t;
+    const dl = await tab.waitForEvent('download', { timeout: 15000 }).catch(() => null);
+    if (dl) {
+      await dl.saveAs(path);
+    } else {
+      await tab.waitForLoadState('load', { timeout: 30000 }).catch(() => {});
+      const res = await c.request.get(tab.url());
+      const type = res.headers()['content-type'] || '';
+      if (!/pdf/i.test(type)) { await tab.close().catch(() => {}); throw new Error(`der neue Tab ist kein PDF (${type || 'ohne Typ'})`); }
+      writeFileSync(path, await res.body(), { mode: 0o600 });
+    }
+    await tab.close().catch(() => {});
+  }
+  const head = readFileSync(path).subarray(0, 5).toString('latin1');
+  if (head !== '%PDF-') { rmSync(path, { force: true }); throw new Error('die geladene Datei ist kein PDF'); }
+  return { saved: path, bytes: statSync(path).size };
+}
+
 // What the portal saying "this return is in" looks like. Read after the click,
 // where it is the proof that the submission happened, and before it as well,
 // because the same sentence sits on the Abschluss page of a return that was
@@ -1064,6 +1117,7 @@ const TOOLS = [
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an option neither a radio group nor a dropdown has (the reply lists the ones it does), and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards and compared with what was asked for — a radio the portal hands back unanswered, and a dropdown it hands back on another option or on none, come back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed. The edit/delete image buttons of a table row have no text: pass their exact id from taxme_get_fields (e.g. "button_edit_id_…"); for a "button_delete_id_…" the portal\'s delete confirmation is accepted. An empty or blank label is refused rather than resolved — an empty substring matches every element on the page, so it would press whichever button comes first.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
   { name: 'taxme_upload', description: 'Attach files on a "Belege hinzufügen" page of the open return (open it first with taxme_click on the row\'s "Belege hinzufügen" button id). files = absolute paths to existing PDF, JPEG or PNG files of at most 10 MB each; anything else is refused before the browser is touched. Uses the page\'s file input, or the "Weitere Belege vom Computer" button when the input is hidden behind it, and waits until the page lists each file (up to 30 s) and reports any it does not show as pending. The return itself is not filed by this.', inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' } } }, required: ['files'] } },
+  { name: 'taxme_download', description: 'Save a printout or receipt as PDF: clicks the button/link named by label (same lookup as taxme_click, ids included) on the current page — or, with year, in that row of the case list (taxme_list_returns shows each row\'s actions) — and stores the download, or the PDF a new tab opens, at path. path = absolute, ends in .pdf, its directory exists, the file does not; nothing is overwritten, and a file that is not a PDF is removed again.', inputSchema: { type: 'object', properties: { label: { type: 'string' }, path: { type: 'string' }, year: { type: 'number' } }, required: ['label', 'path'] } },
   { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition, and it is settled the way taxme_goto_section settles it — by the menu entry the breadcrumb names — before a word of the page is read: a portal that refused to open the section comes back as an error naming the page you are really on instead of that page\'s text. A breadcrumb that names no entry of this menu settles nothing there, though, and where it has settled nothing the page itself has to say the section is open before an amount is read off it: the calculation is only ever read from a line the word HEADS — never from the left-menu entry, which is on every page of the return — and, absent a breadcrumb naming the entry, only when that line IS a heading of the page (a heading tag, a legend, a caption, a title/header panel) rather than a sentence beginning with the same word, since a refusal banner can be written either way round and word order is the portal\'s phrasing, not evidence about which page is open. A click that landed on a page with no menu at all — an expired session lands on the login form — is reported as no return being open, not as a page carrying no calculation.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click. A page whose text could not be read at all (page_unreadable) is refused for the same reason one step further back: a read that failed is not a page that said no. In both cases the submit button is named as not_clicked rather than would_click, because nothing would be pressed. And a page carrying no menu at all is no return — an expired session lands on the login form — which is said in those words rather than as the Abschluss page merely not being open.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
@@ -1356,6 +1410,34 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       }
       await saveState();
       return text({ results, ...(await fieldList(p, 'fields_after')) });
+    }
+    if (name === 'taxme_download') {
+      await checkTarget(args.path);
+      let p;
+      if (args.year) {
+        p = await readingPage();
+        const st = await ensure(p, CASES);
+        if (st !== 'ok') return text({ status: st });
+        await pause(p, 3000);
+        // The row is found the way taxme_list_returns reads it: the year in the
+        // first cell of a data row, so a date elsewhere in another row never
+        // decides which case is printed.
+        const idx = await p.locator('table tr').evaluateAll((trs, y) => trs.findIndex(tr => {
+          if (tr.querySelector('th')) return false;
+          const first = tr.querySelector('td');
+          return !!first && new RegExp(`\\b${y}\\b`).test(first.innerText);
+        }), Number(args.year));
+        if (idx < 0) throw new Error(`keine Zeile für ${args.year} in der Fallübersicht`);
+        const row = p.locator('table tr').nth(idx);
+        const el = row.locator('a, button, input[type=submit], input[type=button]').filter({ hasText: rxExact(args.label) })
+          .or(row.locator(`input[type=submit][value="${cssStr(args.label)}"], input[type=button][value="${cssStr(args.label)}"]`)).first();
+        if (!(await el.count())) throw new Error(`"${args.label}" steht nicht in der Zeile ${args.year}`);
+        return text(await downloadPdf(p, el, args.path));
+      }
+      p = await page();
+      const el = await byText(p, args.label, true);
+      if (!el) throw new Error(`kein klickbares Element "${args.label}"`);
+      return text(await downloadPdf(p, el, args.path));
     }
     if (name === 'taxme_upload') { const names = await checkUploads(args.files); const p = await page(); const r = await uploadFiles(p, args.files, names); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, ...(await fieldList(p)) }); }
     if (name === 'taxme_click') { const p = await page(); const r = await clickByText(p, args.label); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, ...(await fieldList(p)) }); }

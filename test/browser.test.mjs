@@ -177,7 +177,7 @@ describe('reading', () => {
     assert.equal(data.status, 'ok');
     assert.deepEqual(data.returns, [
       { fall: 'Steuererklärung 2025', status: 'In Bearbeitung' },
-      { fall: 'Steuererklärung 2024', status: 'Eingereicht' },
+      { fall: 'Steuererklärung 2024', status: 'Eingereicht', actions: ['Steuererklärung 2024', 'Drucken'] },
     ]);
   });
 
@@ -898,6 +898,47 @@ describe('clicking', () => {
     assert.equal(portal.state.clicks.length, before, 'nothing was clicked');
     assert.equal(after.data.breadcrumb, where.data.breadcrumb,
       `the browser was navigated away on an argument that named nothing: ${after.data.breadcrumb}`);
+  });
+});
+
+describe('downloading printouts', () => {
+  const tmp = async () => {
+    const { mkdtempSync } = await import('node:fs'); const { join } = await import('node:path'); const { tmpdir } = await import('node:os');
+    return mkdtempSync(join(tmpdir(), 'taxme-dl-'));
+  };
+  test('saves the PDF a print link serves, and refuses to overwrite it', SLOW, async () => {
+    const { readFileSync } = await import('node:fs'); const { join } = await import('node:path');
+    const path = join(await tmp(), 'Example_StE_2025.pdf');
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    const { data, isError, raw } = await srv.call('taxme_download', { label: 'PDF drucken', path });
+    assert.equal(isError, false, raw.slice(0, 300));
+    assert.equal(data.saved, path);
+    assert.match(readFileSync(path, 'latin1'), /^%PDF-1\.4 fixture 2025/);
+    const again = await srv.call('taxme_download', { label: 'PDF drucken', path });
+    assert.equal(again.isError, true, 'an existing file is never overwritten');
+  });
+
+  test('takes the print action from the row of the requested year', SLOW, async () => {
+    const { readFileSync } = await import('node:fs'); const { join } = await import('node:path');
+    const listed = await srv.call('taxme_list_returns');
+    assert.deepEqual(listed.data.returns.find(r => /2024/.test(r.fall)).actions, ['Steuererklärung 2024', 'Drucken']);
+    const path = join(await tmp(), 'Example_StE_2024.pdf');
+    const { isError, raw } = await srv.call('taxme_download', { label: 'Drucken', path, year: 2024 });
+    assert.equal(isError, false, raw.slice(0, 300));
+    assert.match(readFileSync(path, 'latin1'), /fixture 2024/, 'the 2024 row, not another one');
+  });
+
+  test('a file that is not a PDF is not kept, and bad targets are refused first', SLOW, async () => {
+    const { existsSync } = await import('node:fs'); const { join } = await import('node:path');
+    const dir = await tmp();
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    const fake = await srv.call('taxme_download', { label: 'Kein PDF', path: join(dir, 'x.pdf') });
+    assert.equal(fake.isError, true);
+    assert.equal(existsSync(join(dir, 'x.pdf')), false, 'the HTML that came back was removed');
+    for (const path of ['relative.pdf', join(dir, 'x.txt'), join(dir, 'missing', 'x.pdf')]) {
+      const r = await srv.call('taxme_download', { label: 'PDF drucken', path });
+      assert.equal(r.isError, true, `accepted ${path}`);
+    }
   });
 });
 
