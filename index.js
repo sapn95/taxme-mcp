@@ -988,14 +988,18 @@ async function uploadFiles(p, files, names) {
   // iframe and the "Weitere Belege vom Computer" control is a styled element,
   // not an <a> or <button>. So every frame is searched, the input first, then
   // any element carrying that text, and the file chooser it opens is answered.
-  const frames = p.frames();
-  let input = null;
-  for (const f of frames) { const l = f.locator('input[type=file]'); if (await l.count().catch(() => 0)) { input = l.first(); break; } }
+  // The iframe may still be loading when the page itself is ready, so the
+  // search is repeated on fresh frames for up to 10 s before giving up.
+  let input = null, btn = null;
+  for (const until = Date.now() + 10000; ;) {
+    for (const f of p.frames()) { const l = f.locator('input[type=file]'); if (await l.count().catch(() => 0)) { input = l.first(); break; } }
+    if (!input) for (const f of p.frames()) { const l = f.getByText(/Weitere Belege vom Computer/); if (await l.count().catch(() => 0)) { btn = l.last(); break; } }
+    if (input || btn || Date.now() > until) break;
+    await pause(p, 500).catch(() => {});
+  }
   if (input) {
     await input.setInputFiles(files);
   } else {
-    let btn = null;
-    for (const f of frames) { const l = f.getByText(/Weitere Belege vom Computer/); if (await l.count().catch(() => 0)) { btn = l.last(); break; } }
     if (!btn) throw new Error('kein Datei-Upload auf dieser Seite — zuerst "Belege hinzufügen" öffnen');
     const [chooser] = await Promise.all([p.waitForEvent('filechooser', { timeout: 10000 }), btn.click({ timeout: 10000 })]);
     await chooser.setFiles(files);
@@ -1011,6 +1015,9 @@ async function uploadFiles(p, files, names) {
     await pause(p, 1000).catch(() => {});
     listed = await shown();
   }
+  // A widget can show the chosen name before its request has finished, so the
+  // network has to settle as well before the upload is reported as done.
+  await p.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
   return { uploaded: names, listed, ...(listed.length < names.length ? { pending: names.filter(n => !listed.includes(n)) } : {}) };
 }
 
