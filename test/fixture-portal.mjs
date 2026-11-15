@@ -36,6 +36,7 @@ export const VIEWSTATE = 'viewstate-do-not-leak-9a71';
 const CASES = '/taxme-npo/facelets/caseSelection.jsf';
 const STATEMENT = '/taxme-bezug/gui/kontoauszug/forderungen';
 const EDIT = '/tmo/facelets/edit.jsf';
+const UPLOAD = '/tmo/facelets/upload.jsf';
 
 const SECTIONS = [
   ['personalien', 'Personalien', 'Formular in Bearbeitung'],
@@ -179,6 +180,7 @@ const einkuenfte = saved => `
     <tr><td>Bruttolohn</td><td><input type="text" name="betrag" id="form:eink:0:betrag" value="" oninput="franken(this)"></td></tr>
   </table>
   <a href="${EDIT}?year=2025&amp;s=einkuenfte&amp;neu=1">Neuen Eintrag erfassen</a>
+  <a href="${UPLOAD}">Belege hinzufügen</a>
   <input type="submit" name="b" value="Speichern und schliessen">
   <input type="submit" name="b" value="Speichern">
   <button type="submit" name="b" value="Nächste Seite">Nächste Seite</button>
@@ -211,6 +213,7 @@ export function start() {
     logins: 0,          // completed AGOV logins
     submitted: [],      // every request that tried to submit a return
     clicks: [],         // the button value the portal actually received
+    uploads: [],        // file names the receipts page received
     events: [],         // change events fired by the form widgets
     anonymous: false,   // 200 OK, but "Angemeldet als: Benutzer"
     autoLogin: false,   // the AGOV page completes by itself (stands in for the human)
@@ -376,6 +379,18 @@ export function start() {
         </table>`));
     }
 
+    // The receipts page: the file input is hidden behind a button, as in the
+    // portal, and the chosen files are posted as soon as they are picked.
+    if (u.pathname === UPLOAD) {
+      if (req.method === 'POST') for (const m of body.matchAll(/filename="([^"]+)"/g)) state.uploads.push(m[1]);
+      return html(shell('Belege', `<div>TaxMe 2025 &gt; Belege hinzufügen</div>
+<form method="post" enctype="multipart/form-data" action="${UPLOAD}">
+  <input type="file" name="f" id="fileInput" multiple style="display:none" onchange="this.form.submit()">
+  <button type="button" onclick="document.getElementById('fileInput').click()">Weitere Belege vom Computer</button>
+</form>
+<ul>${state.uploads.map(n => `<li>${n}</li>`).join('')}</ul>
+<a href="${EDIT}?year=2025&amp;s=einkuenfte">Abbrechen</a>`));
+    }
     if (u.pathname === EDIT) {
       // The case list still answers, only the edit view does not: the session
       // that was good enough to list the returns has expired by the time the

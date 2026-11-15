@@ -901,6 +901,33 @@ describe('clicking', () => {
   });
 });
 
+describe('uploading receipts', () => {
+  test('attaches a PDF through the file input hidden behind the button', SLOW, async () => {
+    const { writeFileSync, mkdtempSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'taxme-up-'));
+    const file = join(dir, 'Example_Lohnausweis.pdf');
+    writeFileSync(file, '%PDF-1.4 example');
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    await srv.call('taxme_click', { label: 'Belege hinzufügen' });
+    const { data, isError, raw } = await srv.call('taxme_upload', { files: [file] });
+    assert.equal(isError, false, raw.slice(0, 300));
+    assert.deepEqual(portal.state.uploads.slice(-1), ['Example_Lohnausweis.pdf'], 'the portal received the file');
+    assert.deepEqual(data.listed, ['Example_Lohnausweis.pdf'], 'and the reply says the page now lists it');
+    await srv.call('taxme_click', { label: 'Abbrechen' });
+  });
+
+  test('refuses a path it cannot vouch for before touching the browser', SLOW, async () => {
+    const before = portal.state.uploads.length;
+    for (const files of [['relative/Example.pdf'], ['/etc/hosts'], ['/nonexistent/Example.pdf'], []]) {
+      const { isError, raw } = await srv.call('taxme_upload', { files });
+      assert.equal(isError, true, `accepted ${JSON.stringify(files)}: ${raw.slice(0, 200)}`);
+    }
+    assert.equal(portal.state.uploads.length, before, 'nothing was uploaded');
+  });
+});
+
 describe('snapshot and results', () => {
   test('reports the breadcrumb, and writes a screenshot when asked', SLOW, async () => {
     const { data } = await srv.call('taxme_snapshot', { screenshot: true });
