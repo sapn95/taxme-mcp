@@ -369,7 +369,7 @@ async function listReturns(p) {
         // What can be done with the case from this row (print, receipt, view):
         // the labels taxme_download needs, read off the row itself.
         const actions = [...tr.querySelectorAll('a, button, input[type=submit], input[type=button], input[type=image]')]
-          .map(e => (e.value || e.innerText || e.title || e.alt || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+          .map(e => (e.innerText || e.value || e.title || e.alt || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
         out.push({ fall: cells[0], status: cells[1], ...(actions.length > 1 ? { actions } : {}) });
       }
     }
@@ -1065,31 +1065,44 @@ async function checkTarget(path) {
 
 async function downloadPdf(p, el, path) {
   const c = p.context();
-  const got = Promise.race([
-    p.waitForEvent('download', { timeout: 60000 }).then(d => ({ d })),
-    c.waitForEvent('page', { timeout: 60000 }).then(t => ({ t })),
-  ]);
-  await el.click({ timeout: 10000 });
-  let r;
-  try { r = await got; } catch { throw new Error('nach dem Klick kam weder ein Download noch ein neuer Tab'); }
-  const { writeFileSync, statSync } = await import('node:fs');
-  if (r.d) {
-    await r.d.saveAs(path);
-  } else {
-    // A PDF opened in a tab: in headless Chromium it arrives as a download of
-    // that tab; otherwise it is fetched with the session's own cookies.
-    const tab = r.t;
-    const dl = await tab.waitForEvent('download', { timeout: 15000 }).catch(() => null);
-    if (dl) {
-      await dl.saveAs(path);
-    } else {
-      await tab.waitForLoadState('load', { timeout: 30000 }).catch(() => {});
-      const res = await c.request.get(tab.url());
-      const type = res.headers()['content-type'] || '';
-      if (!/pdf/i.test(type)) { await tab.close().catch(() => {}); throw new Error(`der neue Tab ist kein PDF (${type || 'ohne Typ'})`); }
-      writeFileSync(path, await res.body(), { mode: 0o600 });
+  const { writeFileSync, statSync, linkSync, unlinkSync } = await import('node:fs');
+  // Every listener is in place before the click: a download on this page or on
+  // any tab the click opens, and any PDF the browser receives. Registering them
+  // afterwards could miss an event that fires while the click is still
+  // settling, and fetching the tab's URL a second time fails for a printout
+  // that was produced by a POST or a one-time link.
+  const dls = [], pdfs = [], tabs = [];
+  const onDl = d => dls.push(d);
+  const onPage = t => { tabs.push({ t, at: Date.now() }); t.on('download', onDl); };
+  // The body is read at once: once the browser hands a response over to the
+  // download manager it can no longer be read back.
+  const onResp = r => { if (/pdf/i.test(r.headers()['content-type'] || '')) pdfs.push(r.body().catch(() => null)); };
+  p.on('download', onDl); c.on('page', onPage); c.on('response', onResp);
+  try {
+    await el.click({ timeout: 10000 });
+    for (const until = Date.now() + 60000; !dls.length && !pdfs.length && Date.now() < until;) {
+      if (tabs.length && Date.now() - tabs[0].at > 20000) break;
+      await new Promise(r => { setTimeout(r, 250); });
     }
-    await tab.close().catch(() => {});
+    // A download announces itself right after its response, so a moment more
+    // lets it arrive before the received body is used instead.
+    if (!dls.length) await new Promise(r => { setTimeout(r, 1500); });
+    const bodies = (await Promise.all(pdfs)).filter(b => b && b.subarray(0, 5).toString('latin1') === '%PDF-');
+    if (!dls.length && !bodies.length) throw new Error('nach dem Klick kam weder ein Download noch ein PDF');
+    // Written so that an existing file is never replaced, even one that
+    // appeared while the browser was busy: a download is saved beside the
+    // target and hard-linked into place (link fails if the name exists); a
+    // received PDF is written with the exclusive flag.
+    if (dls.length) {
+      const part = `${path}.part-${process.pid}-${Date.now()}`;
+      await dls[0].saveAs(part);
+      try { linkSync(part, path); } finally { try { unlinkSync(part); } catch { /* gone already */ } }
+    } else {
+      writeFileSync(path, bodies[bodies.length - 1], { flag: 'wx', mode: 0o600 });
+    }
+  } finally {
+    p.off('download', onDl); c.off('page', onPage); c.off('response', onResp);
+    for (const { t } of tabs) await t.close().catch(() => {});
   }
   const head = readFileSync(path).subarray(0, 5).toString('latin1');
   if (head !== '%PDF-') { rmSync(path, { force: true }); throw new Error('die geladene Datei ist kein PDF'); }

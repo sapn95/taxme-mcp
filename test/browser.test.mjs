@@ -928,6 +928,15 @@ describe('downloading printouts', () => {
     assert.match(readFileSync(path, 'latin1'), /fixture 2024/, 'the 2024 row, not another one');
   });
 
+  test('keeps a receipt a POST opens in a new tab, without fetching it again', SLOW, async () => {
+    const { readFileSync } = await import('node:fs'); const { join } = await import('node:path');
+    const path = join(await tmp(), 'Example_Quittung.pdf');
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    const { isError, raw } = await srv.call('taxme_download', { label: 'Quittung drucken', path });
+    assert.equal(isError, false, raw.slice(0, 300));
+    assert.match(readFileSync(path, 'latin1'), /^%PDF-1\.4 quittung/);
+  });
+
   test('a file that is not a PDF is not kept, and bad targets are refused first', SLOW, async () => {
     const { existsSync } = await import('node:fs'); const { join } = await import('node:path');
     const dir = await tmp();
