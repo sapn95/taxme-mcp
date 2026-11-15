@@ -191,7 +191,8 @@ const einkuenfte = saved => `
   <input type="image" name="del0" id="button_delete_id_eink_0" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="" style="width:16px;height:16px;display:inline-block" onclick="return confirm('Wollen Sie den Eintrag wirklich löschen?')">
   <input type="image" name="ask0" id="button_ask_id_eink_0" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="" style="width:16px;height:16px;display:inline-block" onclick="return confirm('Weiter?')">
   ${saved ? '<div class="msg">Gespeichert</div>' : ''}
-</form>`;
+</form>
+<form method="post" action="/tmo/quittung" target="_blank"><input type="submit" name="q" value="Quittung drucken"></form>`;
 
 // `withButton` is what a return that is already in comes back to. A real portal
 // keeps the confirmation and takes the button away; this fixture keeps both by
@@ -391,6 +392,13 @@ export function start() {
     if (u.pathname === PRINT) {
       res.writeHead(200, { 'content-type': 'application/pdf', 'content-disposition': `attachment; filename="dvb_print_${u.searchParams.get('year') || '2025'}.pdf"` });
       return res.end(`%PDF-1.4 fixture ${u.searchParams.get('year') || '2025'}`);
+    }
+    // A receipt produced by a POST and shown inline in a new tab: a second GET
+    // of that URL gets nothing, so only the response the browser received holds it.
+    if (u.pathname === '/tmo/quittung') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
+      res.writeHead(200, { 'content-type': 'application/pdf' });
+      return res.end('%PDF-1.4 quittung');
     }
     // A link that claims to print and hands back a web page.
     if (u.pathname === '/tmo/notpdf') {
