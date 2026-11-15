@@ -955,6 +955,42 @@ async function clickByText(p, label) {
   return { clicked: real, ...(real === label ? {} : { requested: label }), url_changed: p.url() !== before };
 }
 
+// Receipts go up through a file chooser. The paths are checked before the
+// browser is touched: only absolute paths to regular files of a type the
+// portal takes, and none larger than it accepts, so a typo or a directory
+// never reaches the upload and a tax return never receives the wrong kind of
+// file.
+const UPLOAD_TYPES = /\.(pdf|jpe?g|png)$/i;
+const UPLOAD_MAX = 10 * 1024 * 1024;
+async function uploadFiles(p, files) {
+  if (!Array.isArray(files) || !files.length) throw new Error('files: mindestens ein Pfad nötig');
+  const { statSync } = await import('node:fs');
+  const { isAbsolute, basename } = await import('node:path');
+  for (const f of files) {
+    if (typeof f !== 'string' || !isAbsolute(f)) throw new Error(`kein absoluter Pfad: ${f}`);
+    if (!UPLOAD_TYPES.test(f)) throw new Error(`nur PDF, JPEG oder PNG: ${basename(f)}`);
+    let st;
+    try { st = statSync(f); } catch { throw new Error(`Datei nicht gefunden: ${basename(f)}`); }
+    if (!st.isFile()) throw new Error(`keine Datei: ${basename(f)}`);
+    if (st.size > UPLOAD_MAX) throw new Error(`grösser als 10 MB: ${basename(f)}`);
+  }
+  const before = (await p.evaluate(() => document.body.innerText).catch(() => '')) || '';
+  const input = p.locator('input[type=file]');
+  if (await input.count()) {
+    await input.first().setInputFiles(files);
+  } else {
+    const btn = await byText(p, 'Weitere Belege vom Computer', true);
+    if (!btn) throw new Error('kein Datei-Upload auf dieser Seite — zuerst "Belege hinzufügen" öffnen');
+    const [chooser] = await Promise.all([p.waitForEvent('filechooser', { timeout: 10000 }), btn.click({ timeout: 10000 })]);
+    await chooser.setFiles(files);
+  }
+  await pause(p, 4000).catch(() => {});
+  await p.waitForLoadState('domcontentloaded').catch(() => {});
+  const after = (await p.evaluate(() => document.body.innerText).catch(() => '')) || '';
+  const names = files.map(f => basename(f));
+  return { uploaded: names, listed: names.filter(n => after.includes(n) && !before.includes(n)) };
+}
+
 // What the portal saying "this return is in" looks like. Read after the click,
 // where it is the proof that the submission happened, and before it as well,
 // because the same sentence sits on the Abschluss page of a return that was
@@ -975,6 +1011,7 @@ const TOOLS = [
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an option neither a radio group nor a dropdown has (the reply lists the ones it does), and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards and compared with what was asked for — a radio the portal hands back unanswered, and a dropdown it hands back on another option or on none, come back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
   { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed. The edit/delete image buttons of a table row have no text: pass their exact id from taxme_get_fields (e.g. "button_edit_id_…"); for a "button_delete_id_…" the portal\'s delete confirmation is accepted. An empty or blank label is refused rather than resolved — an empty substring matches every element on the page, so it would press whichever button comes first.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
+  { name: 'taxme_upload', description: 'Attach files on a "Belege hinzufügen" page of the open return (open it first with taxme_click on the row\'s "Belege hinzufügen" button id). files = absolute paths to existing PDF, JPEG or PNG files of at most 10 MB each; anything else is refused before the browser is touched. Uses the page\'s file input, or the "Weitere Belege vom Computer" button when the input is hidden behind it, and returns the page afterwards so the listed files can be checked. The return itself is not filed by this.', inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' } } }, required: ['files'] } },
   { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition, and it is settled the way taxme_goto_section settles it — by the menu entry the breadcrumb names — before a word of the page is read: a portal that refused to open the section comes back as an error naming the page you are really on instead of that page\'s text. A breadcrumb that names no entry of this menu settles nothing there, though, and where it has settled nothing the page itself has to say the section is open before an amount is read off it: the calculation is only ever read from a line the word HEADS — never from the left-menu entry, which is on every page of the return — and, absent a breadcrumb naming the entry, only when that line IS a heading of the page (a heading tag, a legend, a caption, a title/header panel) rather than a sentence beginning with the same word, since a refusal banner can be written either way round and word order is the portal\'s phrasing, not evidence about which page is open. A click that landed on a page with no menu at all — an expired session lands on the login form — is reported as no return being open, not as a page carrying no calculation.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click. A page whose text could not be read at all (page_unreadable) is refused for the same reason one step further back: a read that failed is not a page that said no. In both cases the submit button is named as not_clicked rather than would_click, because nothing would be pressed. And a page carrying no menu at all is no return — an expired session lands on the login form — which is said in those words rather than as the Abschluss page merely not being open.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];
@@ -1268,6 +1305,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       await saveState();
       return text({ results, ...(await fieldList(p, 'fields_after')) });
     }
+    if (name === 'taxme_upload') { const p = await page(); const r = await uploadFiles(p, args.files); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, ...(await fieldList(p)) }); }
     if (name === 'taxme_click') { const p = await page(); const r = await clickByText(p, args.label); await saveState(); return text({ ...r, breadcrumb: (await snapshot(p)).breadcrumb, ...(await fieldList(p)) }); }
     if (name === 'taxme_results') {
       const p = await page();
