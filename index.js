@@ -912,6 +912,12 @@ async function byText(p, label, withInputs = false) {
   const v = cssStr(label);
   const tries = [p.locator('a, button').filter({ hasText: rxExact(label) })];
   if (withInputs) tries.push(p.locator(`input[type=submit][value="${v}"], input[type=button][value="${v}"]`));
+  // The edit and delete controls of a table row are image inputs: no value, no
+  // text, nothing a label can name. taxme_get_fields lists them by id
+  // (button_edit_id_…, button_delete_id_…), so an exact id is accepted as the
+  // name of a clickable element. Only exact, only clickable elements, and only
+  // after the exact-text matches, so a word never resolves to an id by accident.
+  if (withInputs) tries.push(p.locator(['input[type=image]', 'input[type=submit]', 'input[type=button]', 'button', 'a'].map(t => `${t}[id="${v}"]`).join(', ')));
   tries.push(p.locator(`a:has-text("${v}"), button:has-text("${v}")`));
   if (withInputs) tries.push(p.locator(`input[type=submit][value*="${v}"], input[type=button][value*="${v}"]`));
   for (const t of tries) if (await t.count()) return t.first();
@@ -928,10 +934,21 @@ async function clickByText(p, label) {
   // schliessen", asking for "Speichern" closed the form and came back saying
   // "Speichern" had been clicked, so the next tool worked on a form that was no
   // longer open.
-  const real = (await el.evaluate(e => (e.value || e.innerText || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || label;
-  await el.click({ timeout: 10000 });
-  await pause(p, 4000).catch(() => {});
-  await p.waitForLoadState('domcontentloaded').catch(() => {});
+  const real = (await el.evaluate(e => (e.value || e.innerText || e.alt || e.title || '').replace(/\s+/g, ' ').trim()).catch(() => '')) || label;
+  // TaxMe asks before deleting a table row ("wirklich löschen?") through
+  // window.confirm, and Playwright dismisses every dialog nobody listens for,
+  // so a delete click came back as pressed while the row stayed. The dialog is
+  // accepted only for a row delete button named by its exact id; any other
+  // click keeps the default and a dialog it raises is still dismissed.
+  const accept = /^button_delete_/.test(label) ? d => d.accept().catch(() => {}) : null;
+  if (accept) p.once('dialog', accept);
+  try {
+    await el.click({ timeout: 10000 });
+    await pause(p, 4000).catch(() => {});
+    await p.waitForLoadState('domcontentloaded').catch(() => {});
+  } finally {
+    if (accept) p.off('dialog', accept);
+  }
   return { clicked: real, ...(real === label ? {} : { requested: label }), url_changed: p.url() !== before };
 }
 
@@ -954,7 +971,7 @@ const TOOLS = [
   { name: 'taxme_get_fields', description: 'List interactive fields on the current page (id, type, value, label, context, name for a radio — the group, i.e. the one question, its button belongs to — and locked when the portal has switched the field off; a locked field takes no value). Long forms are cut at limit (default 60) and the reply says how many were left out; taxme_fill still resolves against every field.', inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many fields to return (default 60)' } } } },
   { name: 'taxme_snapshot', description: 'Current page breadcrumb/url; set screenshot:true for a PNG path.', inputSchema: { type: 'object', properties: { screenshot: { type: 'boolean' } } } },
   { name: 'taxme_fill', description: 'Set fields on the current page. Each value: {target, value}. target = field id OR a label/context substring. value must be text, a number or true/false — text→typed (use whole francs for amounts), radio→option value or label, checkbox→true/false (ja/nein, 1/0 and on/off are understood too). A value that is neither a yes nor a no, an option neither a radio group nor a dropdown has (the reply lists the ones it does), and a field the portal has switched off are all refused rather than guessed at, and every value is read back afterwards and compared with what was asked for — a radio the portal hands back unanswered, and a dropdown it hands back on another option or on none, come back as ok:false, not as set.', inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, value: {} }, required: ['target', 'value'] } } }, required: ['values'] } },
-  { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed. An empty or blank label is refused rather than resolved — an empty substring matches every element on the page, so it would press whichever button comes first.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
+  { name: 'taxme_click', description: 'Click a button/link by visible text (e.g. "Neuen Eintrag erfassen", "Speichern", "Nächste Seite", "Vorherige Seite", "Ändern"). An exact label wins; failing that a substring matches, and the reply names the button that was actually pressed. The edit/delete image buttons of a table row have no text: pass their exact id from taxme_get_fields (e.g. "button_edit_id_…"); for a "button_delete_id_…" the portal\'s delete confirmation is accepted. An empty or blank label is refused rather than resolved — an empty substring matches every element on the page, so it would press whichever button comes first.', inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } },
   { name: 'taxme_results', description: 'Read the Ergebnisse / Steuerberechnung of the open return. Reaching that section is a precondition, and it is settled the way taxme_goto_section settles it — by the menu entry the breadcrumb names — before a word of the page is read: a portal that refused to open the section comes back as an error naming the page you are really on instead of that page\'s text. A breadcrumb that names no entry of this menu settles nothing there, though, and where it has settled nothing the page itself has to say the section is open before an amount is read off it: the calculation is only ever read from a line the word HEADS — never from the left-menu entry, which is on every page of the return — and, absent a breadcrumb naming the entry, only when that line IS a heading of the page (a heading tag, a legend, a caption, a title/header panel) rather than a sentence beginning with the same word, since a refusal banner can be written either way round and word order is the portal\'s phrasing, not evidence about which page is open. A click that landed on a page with no menu at all — an expired session lands on the login form — is reported as no return being open, not as a page carrying no calculation.', inputSchema: { type: 'object', properties: {} } },
   { name: 'taxme_submit_return', description: 'DANGER: final submission (Abschluss → Steuererklärung einreichen). Irreversible. Requires confirm:true; otherwise returns a dry-run of the Abschluss page, naming in would_click the one button a confirmed call would press. Reaching that page is a precondition: if no submit button is there, the call is refused rather than pressing whatever the current page happens to offer. A page that already reports the return as filed (already_submitted) is refused too, confirm:true and all — a confirmation that was on the page beforehand could not prove anything about a second click. A page whose text could not be read at all (page_unreadable) is refused for the same reason one step further back: a read that failed is not a page that said no. In both cases the submit button is named as not_clicked rather than would_click, because nothing would be pressed. And a page carrying no menu at all is no return — an expired session lands on the login form — which is said in those words rather than as the Abschluss page merely not being open.', inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } } } },
 ];

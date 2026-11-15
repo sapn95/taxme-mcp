@@ -182,6 +182,9 @@ const einkuenfte = saved => `
   <input type="submit" name="b" value="Speichern und schliessen">
   <input type="submit" name="b" value="Speichern">
   <button type="submit" name="b" value="Nächste Seite">Nächste Seite</button>
+  <input type="image" name="edit0" id="button_edit_id_eink_0" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="" style="width:16px;height:16px;display:inline-block">
+  <input type="image" name="del0" id="button_delete_id_eink_0" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="" style="width:16px;height:16px;display:inline-block" onclick="return confirm('Wollen Sie den Eintrag wirklich löschen?')">
+  <input type="image" name="ask0" id="button_ask_id_eink_0" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="" style="width:16px;height:16px;display:inline-block" onclick="return confirm('Weiter?')">
   ${saved ? '<div class="msg">Gespeichert</div>' : ''}
 </form>`;
 
@@ -437,6 +440,8 @@ export function start() {
       }
       const btn = form.get('b');
       if (btn) state.clicks.push(btn);
+      // An image input posts name.x / name.y instead of name=value.
+      for (const k of form.keys()) if (k.endsWith('.x')) state.clicks.push(k.slice(0, -2));
       // rejectSubmit models the portal refusing: the click arrives, nothing is
       // recorded, and the page comes back without a confirmation. That is what
       // validation failure and an expired session look like from outside.

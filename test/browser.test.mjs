@@ -840,6 +840,31 @@ describe('clicking', () => {
     assert.ok(data.fields.some(f => f.id === 'form:eink:0:betrag'), 'the new row is there');
   });
 
+  test('presses a row image button named by its exact id', SLOW, async () => {
+    // Edit and delete in a TaxMe table row are <input type=image> with no value
+    // and no text. They were listed by taxme_get_fields and could not be pressed.
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    const before = portal.state.clicks.length;
+    const { isError, raw } = await srv.call('taxme_click', { label: 'button_edit_id_eink_0' });
+    assert.equal(isError, false, raw.slice(0, 300));
+    assert.deepEqual(portal.state.clicks.slice(before), ['edit0'], 'the image button itself was posted');
+    const part = await srv.call('taxme_click', { label: 'button_edit_id_eink' });
+    assert.equal(part.isError, true, 'a partial id is not a match');
+  });
+
+  test('confirms the delete question of a row delete button, and no other dialog', SLOW, async () => {
+    // TaxMe asks "wirklich löschen?" via window.confirm. Unanswered, Playwright
+    // dismisses it and the row stays while the click is reported as done.
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    const before = portal.state.clicks.length;
+    await srv.call('taxme_click', { label: 'button_delete_id_eink_0' });
+    assert.deepEqual(portal.state.clicks.slice(before), ['del0'], 'the delete was confirmed and posted');
+    await srv.call('taxme_goto_section', { name: 'Einkünfte' });
+    const mid = portal.state.clicks.length;
+    await srv.call('taxme_click', { label: 'button_ask_id_eink_0' });
+    assert.deepEqual(portal.state.clicks.slice(mid), [], 'a dialog on any other button is still dismissed');
+  });
+
   test('a label nothing matches is an error, not a random click', SLOW, async () => {
     const before = portal.state.clicks.length;
     const { raw, isError } = await srv.call('taxme_click', { label: 'Alles löschen' });
