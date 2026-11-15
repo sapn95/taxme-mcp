@@ -915,6 +915,12 @@ describe('uploading receipts', () => {
     assert.equal(isError, false, raw.slice(0, 300));
     assert.deepEqual(portal.state.uploads.slice(-1), ['Example_Lohnausweis.pdf'], 'the portal received the file');
     assert.deepEqual(data.listed, ['Example_Lohnausweis.pdf'], 'and the reply says the page now lists it');
+    const before = portal.state.clicks.length;
+    const ok = await srv.call('taxme_click', { label: 'Übernehmen' });
+    assert.equal(ok.isError, false, `the widget's styled confirm button in the iframe: ${ok.raw.slice(0, 200)}`);
+    assert.deepEqual(portal.state.clicks.slice(before), ['Übernehmen']);
+    const part = await srv.call('taxme_click', { label: 'Übernehm' });
+    assert.equal(part.isError, true, 'inside a frame only an exact text matches');
     await srv.call('taxme_click', { label: 'Abbrechen' });
   });
 

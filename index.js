@@ -921,6 +921,22 @@ async function byText(p, label, withInputs = false) {
   tries.push(p.locator(`a:has-text("${v}"), button:has-text("${v}")`));
   if (withInputs) tries.push(p.locator(`input[type=submit][value*="${v}"], input[type=button][value*="${v}"]`));
   for (const t of tries) if (await t.count()) return t.first();
+  // Widgets such as the receipts upload live in an iframe, and their controls
+  // are styled elements rather than buttons ("Übernehmen"). Only when the page
+  // itself has nothing, the child frames are searched, and there only for an
+  // exact text, so a word that is part of a longer label never resolves there.
+  if (withInputs && p.frames) {
+    for (const f of p.frames()) {
+      if (f === p.mainFrame()) continue;
+      const exact = [
+        f.locator('a, button').filter({ hasText: rxExact(label) }),
+        f.locator(`input[type=submit][value="${v}"], input[type=button][value="${v}"]`),
+        // An icon in front of the word ("✓ Übernehmen") is allowed, nothing else.
+        f.getByText(new RegExp(`^[^\\p{L}\\p{N}]*${String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'u')),
+      ];
+      for (const t of exact) if (await t.count().catch(() => 0)) return t.last();
+    }
+  }
   return null;
 }
 
