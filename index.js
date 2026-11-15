@@ -1065,7 +1065,7 @@ async function checkTarget(path) {
 
 async function downloadPdf(p, el, path) {
   const c = p.context();
-  const { writeFileSync, statSync, linkSync, unlinkSync } = await import('node:fs');
+  const { writeFileSync, statSync, linkSync, unlinkSync, copyFileSync, constants: fsConstants } = await import('node:fs');
   // Every listener is in place before the click: a download on this page or on
   // any tab the click opens, and any PDF the browser receives. Registering them
   // afterwards could miss an event that fires while the click is still
@@ -1096,7 +1096,14 @@ async function downloadPdf(p, el, path) {
     if (dls.length) {
       const part = `${path}.part-${process.pid}-${Date.now()}`;
       await dls[0].saveAs(part);
-      try { linkSync(part, path); } finally { try { unlinkSync(part); } catch { /* gone already */ } }
+      try {
+        try { linkSync(part, path); } catch (e) {
+          // File-provider folders (OneDrive, iCloud) refuse hard links; an
+          // exclusive copy keeps the same never-overwrite guarantee there.
+          if (!/EPERM|ENOTSUP|EXDEV|EOPNOTSUPP/.test(e.code || '')) throw e;
+          copyFileSync(part, path, fsConstants.COPYFILE_EXCL);
+        }
+      } finally { try { unlinkSync(part); } catch { /* gone already */ } }
     } else {
       writeFileSync(path, bodies[bodies.length - 1], { flag: 'wx', mode: 0o600 });
     }
