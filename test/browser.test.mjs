@@ -857,11 +857,13 @@ describe('clicking', () => {
     // dismisses it and the row stays while the click is reported as done.
     await srv.call('taxme_goto_section', { name: 'Einkünfte' });
     const before = portal.state.clicks.length;
-    await srv.call('taxme_click', { label: 'button_delete_id_eink_0' });
+    const del = await srv.call('taxme_click', { label: 'button_delete_id_eink_0' });
+    assert.equal(del.isError, false, del.raw.slice(0, 300));
     assert.deepEqual(portal.state.clicks.slice(before), ['del0'], 'the delete was confirmed and posted');
     await srv.call('taxme_goto_section', { name: 'Einkünfte' });
     const mid = portal.state.clicks.length;
-    await srv.call('taxme_click', { label: 'button_ask_id_eink_0' });
+    const ask = await srv.call('taxme_click', { label: 'button_ask_id_eink_0' });
+    assert.equal(ask.isError, false, `the other button must be pressed, or nothing is tested: ${ask.raw.slice(0, 300)}`);
     assert.deepEqual(portal.state.clicks.slice(mid), [], 'a dialog on any other button is still dismissed');
   });
 

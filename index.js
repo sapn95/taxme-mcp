@@ -938,9 +938,12 @@ async function clickByText(p, label) {
   // TaxMe asks before deleting a table row ("wirklich löschen?") through
   // window.confirm, and Playwright dismisses every dialog nobody listens for,
   // so a delete click came back as pressed while the row stayed. The dialog is
-  // accepted only for a row delete button named by its exact id; any other
+  // accepted only for a row delete button resolved by its exact id; any other
   // click keeps the default and a dialog it raises is still dismissed.
-  const accept = /^button_delete_/.test(label) ? d => d.accept().catch(() => {}) : null;
+  // Checked on the element that was resolved, not on the label: a button whose
+  // visible text happened to read like an id would otherwise get the handler.
+  const elId = await el.evaluate(e => e.id || '').catch(() => '');
+  const accept = /^button_delete_/.test(label) && elId === label ? d => d.accept().catch(() => {}) : null;
   if (accept) p.once('dialog', accept);
   try {
     await el.click({ timeout: 10000 });
