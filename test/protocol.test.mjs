@@ -52,6 +52,15 @@ describe('protocol', () => {
     assert.deepEqual(others.map(t => t.name), [], 'no second path to a submission');
   });
 
+  test('a bad upload path is refused before any browser is started', async () => {
+    // With no browser available at all, the answer must still be the path
+    // check: the validation runs first, so it cannot be hidden by a launch error.
+    const srv = await spawnServer({ TAXME_BROWSER: '/nonexistent' });
+    const { raw, isError } = await srv.call('taxme_upload', { files: ['relative/Example.pdf'] });
+    assert.equal(isError, true);
+    assert.match(raw, /kein absoluter Pfad/, `the path check did not answer first: ${raw.slice(0, 200)}`);
+  });
+
   test('an unknown tool is reported, not silently ignored', async () => {
     const srv = await spawnServer({ TAXME_BROWSER: '/nonexistent' });
     const { data } = await srv.call('taxme_nope');
