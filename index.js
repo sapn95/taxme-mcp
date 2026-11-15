@@ -910,33 +910,39 @@ async function byText(p, label, withInputs = false) {
   // for a name nobody gave, and the callers say so in their own words.
   if (!String(label ?? '').trim()) return null;
   const v = cssStr(label);
-  const tries = [p.locator('a, button').filter({ hasText: rxExact(label) })];
-  if (withInputs) tries.push(p.locator(`input[type=submit][value="${v}"], input[type=button][value="${v}"]`));
+  const exact = [p.locator('a, button').filter({ hasText: rxExact(label) })];
+  if (withInputs) exact.push(p.locator(`input[type=submit][value="${v}"], input[type=button][value="${v}"]`));
   // The edit and delete controls of a table row are image inputs: no value, no
   // text, nothing a label can name. taxme_get_fields lists them by id
   // (button_edit_id_…, button_delete_id_…), so an exact id is accepted as the
   // name of a clickable element. Only exact, only clickable elements, and only
   // after the exact-text matches, so a word never resolves to an id by accident.
-  if (withInputs) tries.push(p.locator(['input[type=image]', 'input[type=submit]', 'input[type=button]', 'button', 'a'].map(t => `${t}[id="${v}"]`).join(', ')));
-  tries.push(p.locator(`a:has-text("${v}"), button:has-text("${v}")`));
-  if (withInputs) tries.push(p.locator(`input[type=submit][value*="${v}"], input[type=button][value*="${v}"]`));
-  for (const t of tries) if (await t.count()) return t.first();
+  if (withInputs) exact.push(p.locator(['input[type=image]', 'input[type=submit]', 'input[type=button]', 'button', 'a'].map(t => `${t}[id="${v}"]`).join(', ')));
+  for (const t of exact) if (await t.count()) return t.first();
   // Widgets such as the receipts upload live in an iframe, and their controls
-  // are styled elements rather than buttons ("Übernehmen"). Only when the page
-  // itself has nothing, the child frames are searched, and there only for an
-  // exact text, so a word that is part of a longer label never resolves there.
+  // are styled elements rather than buttons ("✓ Übernehmen"). Child frames are
+  // searched for an exact label before any substring fallback runs, so a
+  // longer action on the page never wins over the exact one in the widget.
+  // Only visible elements that behave like controls count there: plain text
+  // that happens to read the same is no button.
   if (withInputs && p.frames) {
+    const iconThen = new RegExp(`^[^\\p{L}\\p{N}]*${String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'u');
     for (const f of p.frames()) {
       if (f === p.mainFrame()) continue;
-      const exact = [
+      const inFrame = [
         f.locator('a, button').filter({ hasText: rxExact(label) }),
         f.locator(`input[type=submit][value="${v}"], input[type=button][value="${v}"]`),
-        // An icon in front of the word ("✓ Übernehmen") is allowed, nothing else.
-        f.getByText(new RegExp(`^[^\\p{L}\\p{N}]*${String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'u')),
+        f.locator('[onclick], [role=button], [tabindex], [class*=btn], [class*=button]').filter({ hasText: iconThen }),
       ];
-      for (const t of exact) if (await t.count().catch(() => 0)) return t.last();
+      for (const t of inFrame) {
+        const vis = t.filter({ visible: true });
+        if (await vis.count().catch(() => 0)) return vis.last();
+      }
     }
   }
+  const loose = [p.locator(`a:has-text("${v}"), button:has-text("${v}")`)];
+  if (withInputs) loose.push(p.locator(`input[type=submit][value*="${v}"], input[type=button][value*="${v}"]`));
+  for (const t of loose) if (await t.count()) return t.first();
   return null;
 }
 

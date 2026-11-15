@@ -921,6 +921,8 @@ describe('uploading receipts', () => {
     assert.deepEqual(portal.state.clicks.slice(before), ['Übernehmen']);
     const part = await srv.call('taxme_click', { label: 'Übernehm' });
     assert.equal(part.isError, true, 'inside a frame only an exact text matches');
+    const inert = await srv.call('taxme_click', { label: 'Weiter' });
+    assert.equal(inert.isError, true, 'plain text in a frame is not a control');
     await srv.call('taxme_click', { label: 'Abbrechen' });
   });
 
