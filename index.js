@@ -1153,10 +1153,22 @@ let goingDown = false;
 async function shutdown() {
   if (goingDown) return;
   goingDown = true;
-  try { if (ctx) await ctx.close(); } catch { /* going down anyway */ }
+  // With a deadline. Closing the context in good order can outlast any wait a
+  // client is prepared to make — measured here, it did not come back at all
+  // until a kill signal arrived. Exiting is enough to take the browser down:
+  // Playwright ends the browsers it started when this process goes.
+  const closing = ctx ? ctx.close().catch(() => {}) : null;
+  if (closing) await Promise.race([closing, new Promise(r => { setTimeout(r, 1500); })]);
   process.exit(0);
 }
 server.onclose = () => { void shutdown(); };
+// A client that goes away closes our stdin, and the transport does not report
+// that as a close. So the promise above — no Chromium left running on the
+// profile, no logged-in session on a machine nobody is watching — was kept for
+// a signal and not for a disconnect: the browser child held this process
+// alive, and the two of them stayed until somebody killed them.
+process.stdin.on('end', shutdown);
+process.stdin.on('close', shutdown);
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 

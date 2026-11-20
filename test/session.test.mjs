@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync, statSync, readlinkSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { start } from './fixture-portal.mjs';
 import { startServer } from './client.mjs';
 
@@ -126,6 +127,25 @@ describe('what counts as a completed login', () => {
     assert.equal(data.status, 'ok', JSON.stringify(data));
     assert.equal(data.session_cache, 'saved');
     assert.ok(readFileSync(join(scratch, 'good.json'), 'utf8').includes(portal.SESSION));
+  });
+});
+
+describe('a client that disconnects', () => {
+  test('takes the server and its browser down with it', SLOW, async () => {
+    human(false);
+    const s = await spawnServer({});
+    // Any call that needs a page starts the browser.
+    assert.equal((await s.call('taxme_status')).data.status, 'login_required');
+    const onProfile = () => spawnSync('pgrep', ['-f', join(s.scratch, 'profile')], { encoding: 'utf8' }).stdout.trim();
+    assert.notEqual(onProfile(), '', 'the browser should be running before the disconnect');
+    const t = Date.now();
+    await s.stop();
+    // stop() falls back to a kill after five seconds. Leaving unprompted is
+    // well inside that, and it is the only thing a real client does.
+    assert.ok(Date.now() - t < 4000, `took ${Date.now() - t} ms`);
+    assert.equal(await s.exited, 0);
+    await new Promise(r => { setTimeout(r, 1500); });
+    assert.equal(onProfile(), '', 'a browser is still running on the profile');
   });
 });
 
